@@ -1,0 +1,31 @@
+# Binaries
+/trawl
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Coverage
+*.out
+*.coverprofile
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build output
+/dist/
+/bin/
+
+# Harness
+.claude/cc10x/
+# TODO - remove this in the future
+.claude/

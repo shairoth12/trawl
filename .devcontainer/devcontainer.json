@@ -1,0 +1,41 @@
+{
+  "name": "Trawl",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": [
+    "--cap-add=SYS_PTRACE",
+    "--security-opt",
+    "seccomp=unconfined"
+  ],
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.lintTool": "golangci-lint",
+        "go.lintFlags": [
+          "--fast"
+        ],
+        "go.formatTool": "gofumpt",
+        "editor.formatOnSave": true,
+        "[go]": {
+          "editor.defaultFormatter": "golang.go",
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          }
+        }
+      },
+      "extensions": [
+        "golang.Go",
+        "eamodio.gitlens"
+      ]
+    }
+  },
+  "mounts": [
+    "source=trawl-shell-history,target=/commandhistory,type=volume",
+    "source=trawl-claude-data,target=/home/vscode/.claude,type=volume",
+    "source=trawl-copilot-data,target=/home/vscode/.vscode-server/data/User/globalStorage/github.copilot-chat,type=volume"
+  ],
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "vscode"
+}
