@@ -1,0 +1,58 @@
+// Package trawl provides static analysis for detecting external service calls
+// reachable from a given entry point function.
+package trawl
+
+// ServiceType identifies the category of an external service matched by an indicator.
+// User-defined service types can be expressed as ServiceType("CUSTOM").
+type ServiceType string
+
+// Built-in service type constants.
+const (
+	ServiceTypeHTTP          ServiceType = "HTTP"
+	ServiceTypeGRPC          ServiceType = "GRPC"
+	ServiceTypeRedis         ServiceType = "REDIS"
+	ServiceTypePubSub        ServiceType = "PUBSUB"
+	ServiceTypeDatastore     ServiceType = "DATASTORE"
+	ServiceTypeFirestore     ServiceType = "FIRESTORE"
+	ServiceTypePostgres      ServiceType = "POSTGRES"
+	ServiceTypeElasticsearch ServiceType = "ELASTICSEARCH"
+	ServiceTypeVault         ServiceType = "VAULT"
+	ServiceTypeEtcd          ServiceType = "ETCD"
+)
+
+// Result holds the analysis output for a single entry point function.
+type Result struct {
+	EntryPoint    string         `json:"entry_point"`
+	Package       string         `json:"package"`
+	ExternalCalls []ExternalCall `json:"external_calls"`
+}
+
+// NewResult returns a Result with ExternalCalls initialized to a non-nil empty slice.
+func NewResult(entryPoint, pkg string) Result {
+	return Result{
+		EntryPoint:    entryPoint,
+		Package:       pkg,
+		ExternalCalls: []ExternalCall{},
+	}
+}
+
+// ExternalCall describes a single detected call to an external service reachable from the entry point.
+type ExternalCall struct {
+	ServiceType ServiceType `json:"service_type"` // matched service label, e.g. ServiceTypeRedis
+	ImportPath  string      `json:"import_path"`  // Go import path of the called package
+	Function    string      `json:"function"`
+	File        string      `json:"file"`
+	Line        int         `json:"line"`
+	CallChain   []string    `json:"call_chain"` // ordered function names from entry point to call site; never nil in valid results
+}
+
+// Indicator maps an import path prefix to a named service type for detection purposes.
+type Indicator struct {
+	Package     string      `yaml:"package"      json:"package"`
+	ServiceType ServiceType `yaml:"service_type" json:"service_type"`
+}
+
+// Config holds user-supplied analysis configuration loaded from a YAML file.
+type Config struct {
+	Indicators []Indicator `yaml:"indicators"`
+}
