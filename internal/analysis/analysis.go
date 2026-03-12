@@ -153,7 +153,6 @@ func Load(ctx context.Context, dir, pattern string, algo Algo) (*LoadResult, err
 	if graph == nil {
 		return nil, fmt.Errorf("vta.CallGraph returned nil for pattern %q", pattern)
 	}
-	graph.DeleteSyntheticNodes()
 	result.Graph = graph
 
 	return result, nil
