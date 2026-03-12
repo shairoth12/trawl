@@ -15,6 +15,10 @@ making trawl suitable for automation pipelines and LLM-based tooling.
 - Go 1.24 or later
 - The target package must be loadable by `go/packages` (i.e. it must compile
   and its dependencies must be present in the module cache or vendor directory)
+- The Go version used to build trawl must be greater than or equal to the Go
+  version required by the target module. If you see a "toolchain version
+  mismatch" error, rebuild trawl with the current toolchain:
+  `go build -o trawl ./cmd/trawl`
 
 ## Installation
 

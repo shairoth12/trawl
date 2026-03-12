@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/callgraph/cha"
@@ -99,6 +100,13 @@ func Load(ctx context.Context, dir, pattern string, algo Algo) (*LoadResult, err
 		}
 	})
 	if len(pkgErrs) > 0 {
+		if toolchainVersionMismatch(pkgErrs) {
+			return nil, fmt.Errorf(
+				"toolchain version mismatch: trawl was compiled with an older Go version than the target module requires; "+
+					"rebuild trawl with the current toolchain (go build -o trawl ./cmd/trawl): %w",
+				ErrPackageLoad,
+			)
+		}
 		return nil, fmt.Errorf("%w: %w", ErrPackageLoad, errors.Join(pkgErrs...))
 	}
 
@@ -156,4 +164,19 @@ func Load(ctx context.Context, dir, pattern string, algo Algo) (*LoadResult, err
 	result.Graph = graph
 
 	return result, nil
+}
+
+// toolchainVersionMismatch reports whether any of errs is a go/packages
+// diagnostic about a Go toolchain version mismatch. These messages are emitted
+// when the trawl binary was compiled with an older Go version than the
+// environment's go list binary.
+func toolchainVersionMismatch(errs []error) bool {
+	for _, e := range errs {
+		msg := e.Error()
+		if strings.Contains(msg, "file requires newer Go version") ||
+			strings.Contains(msg, "uses version go") {
+			return true
+		}
+	}
+	return false
 }
