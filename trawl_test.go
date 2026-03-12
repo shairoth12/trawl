@@ -148,7 +148,9 @@ func TestLoadConfig(t *testing.T) {
 		if _, err := tmp.WriteString("indicators: [\x00bad yaml"); err != nil {
 			t.Fatalf("writing temp file: %v", err)
 		}
-		tmp.Close()
+		if err := tmp.Close(); err != nil {
+			t.Fatalf("closing temp file: %v", err)
+		}
 
 		_, err = LoadConfig(context.Background(), tmp.Name())
 		if err == nil {
