@@ -83,7 +83,7 @@ Sample output:
 ## Usage
 
 ```
-trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta]
+trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>]
 ```
 
 | Flag | Default | Description |
@@ -91,7 +91,8 @@ trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta]
 | `--pkg` | `.` | Go package load pattern (e.g. `.`, `./cmd/server`, `github.com/foo/bar`) |
 | `--entry` | _(required)_ | Entry point function name. Accepts `FunctionName`, `Type.Method`, or a bare method name when unambiguous |
 | `--config` | _(none)_ | Path to a YAML config file containing custom service indicators |
-| `--algo` | `vta` | Call graph algorithm: `vta` (Variable Type Analysis, default) or `rta` (Rapid Type Analysis) |
+| `--algo` | `vta` | Call graph algorithm: `vta` (Variable Type Analysis, default), `rta` (Rapid Type Analysis), or `cha` (Class Hierarchy Analysis) |
+| `--scope` | _(none)_ | Extra package patterns for type visibility (comma-separated, e.g. `"./cmd/server"`, `"./..."`) |
 
 trawl responds to `SIGINT` and `SIGTERM` and will abort the analysis cleanly.
 Exit code is non-zero on any error; the error message is written to stderr.
@@ -124,6 +125,15 @@ trawl --pkg github.com/example/myapp/cmd/server --entry HandleRequest
 
 # Pipe the output into jq to extract service types
 trawl --pkg ./cmd/server --entry HandleRequest | jq '[.external_calls[].service_type] | unique'
+
+# Analyze a leaf package with injected interfaces (manual DI)
+trawl --pkg ./internal/handler --entry Handle --scope ./cmd/server
+
+# Analyze with CHA for reflection-based DI (dig, fx)
+trawl --pkg ./internal/handler --entry Handle --scope ./... --algo cha
+
+# Load the entire module for full type visibility
+trawl --pkg ./internal/handler --entry Handle --scope ./...
 ```
 
 ## Configuration file
@@ -181,7 +191,8 @@ addition to config indicators, with lower precedence):
 ## How it works
 
 ```
-  go/packages ──► go/ssa (SSA IR) ──► CHA seed ──► VTA call graph
+  go/packages ──► go/ssa (SSA IR) ──► CHA seed ──► VTA call graph (--algo vta)
+                                              or: CHA only (--algo cha)
                                               or: RTA (built from entry point)
                                                         │
                                              Resolve entry *ssa.Function
@@ -204,6 +215,36 @@ addition to config indicators, with lower precedence):
 Indicator matching uses prefix comparison against the merged list (user config
 first, then built-in). The detector runs before the module-boundary check so
 calls into third-party packages are always captured, never silently skipped.
+
+## Dependency injection
+
+When analyzing leaf packages whose interfaces are implemented in separate
+packages (e.g., constructor injection, DI containers), `--scope` loads
+additional packages into the SSA program to enrich the type universe.
+
+### Manual DI (constructor injection)
+
+For code that manually wires concrete types via constructors (`NewServer(NewStore())`),
+VTA traces value flow through constructors. Use `--scope` to ensure the
+wiring package is loaded:
+
+```bash
+trawl --pkg ./internal/handler --entry Handle --scope ./cmd/server --algo vta
+```
+
+### Reflection-based DI (dig, fx, wire)
+
+For frameworks that wire types via reflection (`dig.Container.Provide`),
+VTA cannot trace through `reflect.Call`. Use CHA instead, which resolves
+interface dispatch purely by structural type matching:
+
+```bash
+trawl --pkg ./internal/handler --entry Handle --scope ./... --algo cha
+```
+
+CHA over-approximates: it reports any type structurally satisfying an interface,
+even if never wired at runtime. VTA is more precise but requires visible value
+flow. The default remains VTA for backward compatibility.
 
 ## Output format
 

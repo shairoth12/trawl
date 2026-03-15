@@ -53,6 +53,7 @@ func TestLoad(t *testing.T) {
 		dir             string
 		pattern         string
 		algo            analysis.Algo
+		scope           []string
 		wantErr         bool
 		wantErrSentinel error
 		check           func(t *testing.T, r *analysis.LoadResult)
@@ -108,13 +109,45 @@ func TestLoad(t *testing.T) {
 			wantErr:         true,
 			wantErrSentinel: analysis.ErrPackageLoad,
 		},
+		{
+			name:    "VTA_with_scope",
+			dir:     root,
+			pattern: "./testdata/scope/leaf",
+			algo:    analysis.AlgoVTA,
+			scope:   []string{"./testdata/scope/..."},
+			check: func(t *testing.T, r *analysis.LoadResult) {
+				t.Helper()
+				if r.SSAPkg.Pkg.Name() != "leaf" {
+					t.Errorf("SSAPkg.Pkg.Name() = %q, want %q", r.SSAPkg.Pkg.Name(), "leaf")
+				}
+				if r.Graph == nil {
+					t.Errorf("Graph = nil, want non-nil")
+				}
+			},
+		},
+		{
+			name:    "CHA_with_scope",
+			dir:     root,
+			pattern: "./testdata/scope/leaf",
+			algo:    analysis.AlgoCHA,
+			scope:   []string{"./testdata/scope/..."},
+			check: func(t *testing.T, r *analysis.LoadResult) {
+				t.Helper()
+				if r.SSAPkg.Pkg.Name() != "leaf" {
+					t.Errorf("SSAPkg.Pkg.Name() = %q, want %q", r.SSAPkg.Pkg.Name(), "leaf")
+				}
+				if r.Graph == nil {
+					t.Errorf("Graph = nil, want non-nil")
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := analysis.Load(t.Context(), tc.dir, tc.pattern, tc.algo)
+			result, err := analysis.Load(t.Context(), tc.dir, tc.pattern, tc.algo, tc.scope...)
 
 			if tc.wantErr {
 				if err == nil {

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"golang.org/x/tools/go/callgraph/rta"
@@ -37,7 +38,7 @@ func run(args []string) error {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		w := fs.Output()
-		_, _ = fmt.Fprintln(w, "Usage: trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta]")
+		_, _ = fmt.Fprintln(w, "Usage: trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>]")
 		_, _ = fmt.Fprintln(w)
 		_, _ = fmt.Fprintln(w, "Flags:")
 		fs.PrintDefaults()
@@ -46,7 +47,8 @@ func run(args []string) error {
 	pkg := fs.String("pkg", ".", "Go package pattern to analyze")
 	entry := fs.String("entry", "", "Entry point function name (required)")
 	configPath := fs.String("config", "", "Path to YAML config file for custom indicators")
-	algoStr := fs.String("algo", string(analysis.AlgoVTA), "Call graph algorithm: vta (default) or rta")
+	algoStr := fs.String("algo", string(analysis.AlgoVTA), "Call graph algorithm: vta (default), rta, or cha")
+	scope := fs.String("scope", "", "Extra package patterns for type visibility (comma-separated)")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -74,7 +76,15 @@ func run(args []string) error {
 	}
 
 	algo := analysis.Algo(*algoStr)
-	loadResult, err := analysis.Load(ctx, dir, *pkg, algo)
+	var scopePatterns []string
+	if *scope != "" {
+		for _, s := range strings.Split(*scope, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				scopePatterns = append(scopePatterns, s)
+			}
+		}
+	}
+	loadResult, err := analysis.Load(ctx, dir, *pkg, algo, scopePatterns...)
 	if err != nil {
 		return fmt.Errorf("loading package %q: %w", *pkg, err)
 	}

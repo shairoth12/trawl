@@ -36,11 +36,12 @@ func pipeline(
 	pattern, entryName string,
 	indicators []trawl.Indicator,
 	algo analysis.Algo,
+	scope ...string,
 ) trawl.Result {
 	t.Helper()
 	root := moduleRoot(t)
 
-	loadResult, err := analysis.Load(t.Context(), root, pattern, algo)
+	loadResult, err := analysis.Load(t.Context(), root, pattern, algo, scope...)
 	if err != nil {
 		t.Fatalf("analysis.Load(%q): %v", pattern, err)
 	}
@@ -195,5 +196,52 @@ func TestIntegration_RTA(t *testing.T) {
 		if ec.ServiceType != trawl.ServiceTypeHTTP {
 			t.Errorf("ExternalCall.ServiceType = %q, want %q", ec.ServiceType, trawl.ServiceTypeHTTP)
 		}
+	}
+}
+
+func TestIntegration_ScopeResolvesInjectedInterface(t *testing.T) {
+	t.Parallel()
+
+	out := pipeline(t, "./testdata/scope/leaf", "HandleLeaf", nil, analysis.AlgoVTA,
+		"./testdata/scope/...")
+
+	if len(out.ExternalCalls) == 0 {
+		t.Fatalf("pipeline(scope/leaf, VTA, scope) = 0 external calls, want >= 1")
+	}
+	seen := make(map[trawl.ServiceType]bool, len(out.ExternalCalls))
+	for _, ec := range out.ExternalCalls {
+		seen[ec.ServiceType] = true
+	}
+	if !seen[trawl.ServiceTypePostgres] {
+		t.Errorf("POSTGRES not detected; saw %v", seen)
+	}
+}
+
+func TestIntegration_NoScopeMissesInjectedInterface(t *testing.T) {
+	t.Parallel()
+
+	out := pipeline(t, "./testdata/scope/leaf", "HandleLeaf", nil, analysis.AlgoVTA)
+
+	if len(out.ExternalCalls) != 0 {
+		t.Errorf("pipeline(scope/leaf, VTA, no scope) = %d external calls, want 0",
+			len(out.ExternalCalls))
+	}
+}
+
+func TestIntegration_CHA_ResolvesReflectionDI(t *testing.T) {
+	t.Parallel()
+
+	out := pipeline(t, "./testdata/scope/leaf", "HandleLeaf", nil, analysis.AlgoCHA,
+		"./testdata/scope/...")
+
+	if len(out.ExternalCalls) == 0 {
+		t.Fatalf("pipeline(scope/leaf, CHA, scope) = 0 external calls, want >= 1")
+	}
+	seen := make(map[trawl.ServiceType]bool, len(out.ExternalCalls))
+	for _, ec := range out.ExternalCalls {
+		seen[ec.ServiceType] = true
+	}
+	if !seen[trawl.ServiceTypePostgres] {
+		t.Errorf("POSTGRES not detected via CHA; saw %v", seen)
 	}
 }

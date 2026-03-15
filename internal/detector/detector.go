@@ -28,10 +28,18 @@ func New(userIndicators []trawl.Indicator) Detector {
 }
 
 // Detect returns the service type and true for the first indicator whose Package
-// is a prefix of importPath. Returns ("", false) if no indicator matches.
+// is a prefix of importPath. When an indicator has SkipInternal set, subpackages
+// under /internal/ are excluded from matching. Returns ("", false) if no
+// indicator matches.
 func (d *detector) Detect(importPath string) (trawl.ServiceType, bool) {
 	for _, ind := range d.indicators {
 		if strings.HasPrefix(importPath, ind.Package) {
+			if ind.SkipInternal {
+				rest := importPath[len(ind.Package):]
+				if strings.Contains(rest, "/internal") {
+					continue
+				}
+			}
 			return ind.ServiceType, true
 		}
 	}

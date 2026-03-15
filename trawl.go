@@ -47,9 +47,12 @@ type ExternalCall struct {
 }
 
 // Indicator maps an import path prefix to a named service type for detection purposes.
+// When SkipInternal is true, subpackages under /internal/ within the indicator prefix
+// are excluded from matching, preventing false positives from library internals.
 type Indicator struct {
-	Package     string      `yaml:"package"      json:"package"`
-	ServiceType ServiceType `yaml:"service_type" json:"service_type"`
+	Package      string      `yaml:"package"      json:"package"`
+	ServiceType  ServiceType `yaml:"service_type" json:"service_type"`
+	SkipInternal bool        `yaml:"skip_internal,omitempty" json:"skip_internal,omitempty"`
 }
 
 // Config holds user-supplied analysis configuration loaded from a YAML file.
