@@ -245,3 +245,52 @@ func TestIntegration_CHA_ResolvesReflectionDI(t *testing.T) {
 		t.Errorf("POSTGRES not detected via CHA; saw %v", seen)
 	}
 }
+
+func TestIntegration_CHA_UbiquitousDispatchFiltered(t *testing.T) {
+	t.Parallel()
+
+	// A custom indicator matches the svcpkg subpackage. CHA would normally
+	// resolve err.Error() to SvcError.Error() in svcpkg, triggering a false
+	// positive. The ubiquitous-interface filter must suppress it while
+	// preserving the real HTTP detection from doWork.
+	custom := []trawl.Indicator{
+		{
+			Package:     "github.com/shairoth12/trawl/testdata/erriface/svcpkg",
+			ServiceType: trawl.ServiceType("CUSTOMSVC"),
+		},
+	}
+	out := pipeline(t, "./testdata/erriface", "HandleErr", custom, analysis.AlgoCHA,
+		"./testdata/erriface/...")
+
+	seen := make(map[trawl.ServiceType]bool, len(out.ExternalCalls))
+	for _, ec := range out.ExternalCalls {
+		seen[ec.ServiceType] = true
+	}
+	if !seen[trawl.ServiceTypeHTTP] {
+		t.Errorf("HTTP not detected; saw %v", seen)
+	}
+	if seen[trawl.ServiceType("CUSTOMSVC")] {
+		t.Errorf("CUSTOMSVC detected via error.Error() dispatch — ubiquitous filter failed; saw %v", seen)
+	}
+}
+
+func TestIntegration_CHA_MockFilterSuppressesFalsePositive(t *testing.T) {
+	t.Parallel()
+
+	// CHA resolves Store.Get to both MockStore.Get (HTTP inside) and
+	// RealStore.Get (database/sql). The mock filter must skip MockStore,
+	// preventing a false HTTP detection, while RealStore's POSTGRES call
+	// is detected normally.
+	out := pipeline(t, "./testdata/mockfilter", "HandleMock", nil, analysis.AlgoCHA)
+
+	seen := make(map[trawl.ServiceType]bool, len(out.ExternalCalls))
+	for _, ec := range out.ExternalCalls {
+		seen[ec.ServiceType] = true
+	}
+	if !seen[trawl.ServiceTypePostgres] {
+		t.Errorf("POSTGRES not detected via RealStore; saw %v", seen)
+	}
+	if seen[trawl.ServiceTypeHTTP] {
+		t.Errorf("HTTP detected via MockStore — mock filter failed; saw %v", seen)
+	}
+}

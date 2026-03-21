@@ -56,3 +56,68 @@ func TestDetect_UserUnknownType(t *testing.T) {
 		t.Errorf("Detect(%q) = (%q, %v), want (%q, true)", "github.com/myorg/bolt/client", got, ok, trawl.ServiceType("BOLT"))
 	}
 }
+
+func TestDetect_SkipInternal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		importPath string
+		want       trawl.ServiceType
+		wantOK     bool
+	}{
+		// Builtin indicators have SkipInternal: true.
+		{
+			name:       "redis_direct_match",
+			importPath: "github.com/redis/go-redis/v9",
+			want:       trawl.ServiceTypeRedis,
+			wantOK:     true,
+		},
+		{
+			name:       "redis_public_subpkg",
+			importPath: "github.com/redis/go-redis/v9/extra/redisotel",
+			want:       trawl.ServiceTypeRedis,
+			wantOK:     true,
+		},
+		{
+			name:       "redis_internal_subpkg_skipped",
+			importPath: "github.com/redis/go-redis/v9/internal/proto",
+			want:       "",
+			wantOK:     false,
+		},
+		{
+			name:       "grpc_internal_skipped",
+			importPath: "google.golang.org/grpc/internal/transport",
+			want:       "",
+			wantOK:     false,
+		},
+		{
+			name:       "grpc_public_subpkg",
+			importPath: "google.golang.org/grpc/credentials",
+			want:       trawl.ServiceTypeGRPC,
+			wantOK:     true,
+		},
+		// User indicator without SkipInternal: internal subpkgs still match.
+		{
+			name:       "user_indicator_no_skip",
+			importPath: "github.com/myorg/svc/internal/proto",
+			want:       trawl.ServiceType("MYSVC"),
+			wantOK:     true,
+		},
+	}
+
+	user := []trawl.Indicator{
+		{Package: "github.com/myorg/svc", ServiceType: "MYSVC", SkipInternal: false},
+	}
+	d := New(user)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := d.Detect(tt.importPath)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("Detect(%q) = (%q, %v), want (%q, %v)",
+					tt.importPath, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
