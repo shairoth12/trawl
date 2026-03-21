@@ -87,13 +87,16 @@ func (w *Walker) dfs(
 			// receiver type's package imports.
 			if edge.Site != nil && edge.Site.Common().IsInvoke() && isMockReceiver(fn) {
 				if svcType := w.inferFromReceiverPkg(fn); svcType != "" {
+					ifaceLabel := interfaceMethodLabel(edge.Site.Common())
 					results = append(results, trawl.ExternalCall{
 						ServiceType: svcType,
 						ImportPath:  receiverPkgPath(fn),
-						Function:    fn.Name(),
+						Function:    ifaceLabel,
 						File:        w.posFile(edge),
 						Line:        w.posLine(edge),
-						CallChain:   appendCopy(chain, fn.String()),
+						CallChain:   appendCopy(chain, ifaceLabel),
+						ResolvedVia: trawl.ResolvedViaMockInference,
+						Confidence:  trawl.ConfidenceMedium,
 					})
 				}
 			}
@@ -118,13 +121,16 @@ func (w *Walker) dfs(
 			if !strings.HasPrefix(pkgPath, w.module) {
 				if edge.Site != nil && edge.Site.Common().IsInvoke() {
 					if svcType := w.inferFromImports(pkg); svcType != "" {
+						ifaceLabel := interfaceMethodLabel(edge.Site.Common())
 						results = append(results, trawl.ExternalCall{
 							ServiceType: svcType,
 							ImportPath:  pkgPath,
-							Function:    fn.RelString(pkg.Pkg),
+							Function:    ifaceLabel,
 							File:        w.posFile(edge),
 							Line:        w.posLine(edge),
-							CallChain:   appendCopy(chain, fn.String()),
+							CallChain:   appendCopy(chain, ifaceLabel),
+							ResolvedVia: trawl.ResolvedViaMockInference,
+							Confidence:  trawl.ConfidenceMedium,
 						})
 					}
 				}
@@ -144,6 +150,8 @@ func (w *Walker) dfs(
 				File:        w.posFile(edge),
 				Line:        w.posLine(edge),
 				CallChain:   appendCopy(chain, fn.String()),
+				ResolvedVia: trawl.ResolvedViaDirect,
+				Confidence:  trawl.ConfidenceHigh,
 			})
 			continue
 		}
@@ -164,6 +172,8 @@ func (w *Walker) dfs(
 						File:        w.posFile(edge),
 						Line:        w.posLine(edge),
 						CallChain:   appendCopy(chain, fn.String()),
+						ResolvedVia: trawl.ResolvedViaCrossModuleInference,
+						Confidence:  trawl.ConfidenceLow,
 					})
 				}
 			}
@@ -200,6 +210,12 @@ func (w *Walker) posLine(edge *callgraph.Edge) int {
 		return 0
 	}
 	return w.fset.Position(pos).Line
+}
+
+// interfaceMethodLabel returns "InterfaceType.MethodName" from an interface
+// dispatch call site. The caller must ensure cc.IsInvoke() is true.
+func interfaceMethodLabel(cc *ssa.CallCommon) string {
+	return types.TypeString(cc.Value.Type(), nil) + "." + cc.Method.Name()
 }
 
 // appendCopy returns a new slice with elem appended to chain.

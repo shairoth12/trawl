@@ -57,6 +57,39 @@ func TestDetect_UserUnknownType(t *testing.T) {
 	}
 }
 
+func TestDetect_WrapperFor(t *testing.T) {
+	t.Parallel()
+
+	user := []trawl.Indicator{{
+		Package:     "github.com/example/rediscache",
+		ServiceType: trawl.ServiceTypeRedis,
+		WrapperFor:  []string{"github.com/custom-redis/client"},
+	}}
+	d := New(user)
+
+	tests := []struct {
+		name       string
+		importPath string
+		want       trawl.ServiceType
+		wantOK     bool
+	}{
+		{"wrapper_matches", "github.com/example/rediscache/cache", trawl.ServiceTypeRedis, true},
+		{"wrapped_lib_matches", "github.com/custom-redis/client/v2", trawl.ServiceTypeRedis, true},
+		{"unrelated", "github.com/unrelated/pkg", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := d.Detect(tt.importPath)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("Detect(%q) = (%q, %v), want (%q, %v)",
+					tt.importPath, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
 func TestDetect_SkipInternal(t *testing.T) {
 	t.Parallel()
 

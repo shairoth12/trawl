@@ -62,7 +62,9 @@ Sample output:
         "github.com/example/myapp/cmd/server.HandleRequest",
         "github.com/example/myapp/internal/client.(*HTTPClient).Fetch",
         "net/http.(*Client).Do"
-      ]
+      ],
+      "resolved_via": "direct",
+      "confidence": "high"
     },
     {
       "service_type": "REDIS",
@@ -74,7 +76,9 @@ Sample output:
         "github.com/example/myapp/cmd/server.HandleRequest",
         "github.com/example/myapp/internal/cache.(*Store).Lookup",
         "github.com/redis/go-redis/v9.(*Client).Get"
-      ]
+      ],
+      "resolved_via": "direct",
+      "confidence": "high"
     }
   ]
 }
@@ -83,7 +87,7 @@ Sample output:
 ## Usage
 
 ```
-trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>]
+trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>] [--dedup]
 ```
 
 | Flag | Default | Description |
@@ -93,6 +97,7 @@ trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--s
 | `--config` | _(none)_ | Path to a YAML config file containing custom service indicators |
 | `--algo` | `vta` | Call graph algorithm: `vta` (Variable Type Analysis, default), `rta` (Rapid Type Analysis), or `cha` (Class Hierarchy Analysis) |
 | `--scope` | _(none)_ | Extra package patterns for type visibility (comma-separated, e.g. `"./cmd/server"`, `"./..."`) |
+| `--dedup` | _(off)_ | Deduplicate results by `(service_type, import_path, function)`, keeping the shortest call chain per unique key; sets `deduplicated: true` in output |
 
 trawl responds to `SIGINT` and `SIGTERM` and will abort the analysis cleanly.
 Exit code is non-zero on any error; the error message is written to stderr.
@@ -134,6 +139,9 @@ trawl --pkg ./internal/handler --entry Handle --scope ./... --algo cha
 
 # Load the entire module for full type visibility
 trawl --pkg ./internal/handler --entry Handle --scope ./...
+
+# Deduplicate output — one entry per (service_type, import_path, function), shortest chain wins
+trawl --pkg ./cmd/server --entry HandleRequest --dedup | jq '.external_calls | length'
 ```
 
 ## Configuration file
@@ -155,14 +163,22 @@ indicators:
   # Introduce a completely custom service type label.
   - package: "github.com/your-org/bolt-client"
     service_type: "BOLT"
+
+  # Declare that a wrapper package and the library it wraps are both Redis.
+  # Calls through either import path receive resolved_via: "direct", confidence: "high".
+  - package: "github.com/your-org/rediscache"
+    service_type: "REDIS"
+    wrapper_for:
+      - "github.com/custom-redis/client"
 ```
 
-Each entry has two fields:
+Each entry has the following fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `package` | string | Import path prefix to match (prefix match, not exact) |
 | `service_type` | string | Label assigned to calls whose import path starts with `package` |
+| `wrapper_for` | list of strings | Additional import path prefixes that should be classified under the same `service_type`. Entries are expanded into separate indicators at load time, so each matched path receives `resolved_via: "direct"` and `confidence: "high"`. Optional. |
 
 Pass the file to trawl with:
 
@@ -264,6 +280,7 @@ three top-level keys below, even when no external calls are found.
 | `entry_point` | string | Fully-qualified SSA name of the resolved entry point function |
 | `package` | string | Import path of the directly-analyzed package |
 | `external_calls` | array | Ordered list of detected external service calls (may be empty, never null) |
+| `deduplicated` | boolean | Present and `true` only when `--dedup` was passed; indicates the list has been deduplicated |
 
 Each element of `external_calls`:
 
@@ -271,10 +288,28 @@ Each element of `external_calls`:
 |-------|------|-------------|
 | `service_type` | string | Matched service label (e.g. `"HTTP"`, `"REDIS"`, or a custom label) |
 | `import_path` | string | Full Go import path of the package where the call was detected |
-| `function` | string | Function or method name within that package |
+| `function` | string | Function or method name within that package. For calls resolved through interface dispatch on a mock type, this is the interface method label (`InterfaceType.MethodName`) rather than the concrete mock type name. |
 | `file` | string | Absolute path to the source file containing the call site |
 | `line` | integer | Line number of the call site; `0` for synthetic call graph edges |
-| `call_chain` | array of strings | Ordered sequence of fully-qualified function names from the entry point to the detected call |
+| `call_chain` | array of strings | Ordered sequence of fully-qualified function names from the entry point to the detected call. Interface dispatch entries through mock types use the interface method label. |
+| `resolved_via` | string | How the call was discovered. See table below. |
+| `confidence` | string | Reliability of the detection. See table below. |
+
+#### `resolved_via` values
+
+| Value | Meaning |
+|-------|---------|
+| `direct` | Import path matched an indicator directly (or via a `wrapper_for` entry). Highest reliability. |
+| `mock_inference` | Call site is on a mock type; service type was inferred from the mock's package imports. |
+| `cross_module_inference` | Service type was inferred from 2-level transitive imports of an external-module package. Lower reliability; verify manually. |
+
+#### `confidence` values
+
+| Value | Meaning |
+|-------|---------|
+| `high` | Direct indicator match. |
+| `medium` | Mock inference — likely correct but depends on import conventions. |
+| `low` | Cross-module transitive inference — treat as a hint, verify manually. |
 
 ## License
 

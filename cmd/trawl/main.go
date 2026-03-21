@@ -49,6 +49,7 @@ func run(args []string) error {
 	configPath := fs.String("config", "", "Path to YAML config file for custom indicators")
 	algoStr := fs.String("algo", string(analysis.AlgoVTA), "Call graph algorithm: vta (default), rta, or cha")
 	scope := fs.String("scope", "", "Extra package patterns for type visibility (comma-separated)")
+	dedupFlag := fs.Bool("dedup", false, "Deduplicate results by (service_type, import_path, function), keeping shortest call chain")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -107,8 +108,15 @@ func run(args []string) error {
 		return fmt.Errorf("walking call graph: %w", err)
 	}
 
+	if *dedupFlag {
+		calls = deduplicateCalls(calls)
+	}
+
 	out := trawl.NewResult(fn.String(), loadResult.SSAPkg.Pkg.Path())
 	out.ExternalCalls = calls
+	if *dedupFlag {
+		out.Deduplicated = true
+	}
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -116,4 +124,37 @@ func run(args []string) error {
 		return fmt.Errorf("encoding output: %w", err)
 	}
 	return nil
+}
+
+type dedupKey struct {
+	serviceType trawl.ServiceType
+	importPath  string
+	function    string
+}
+
+// deduplicateCalls removes duplicate external calls keyed by
+// (ServiceType, ImportPath, Function), keeping the entry with the shortest
+// CallChain among duplicates.
+func deduplicateCalls(calls []trawl.ExternalCall) []trawl.ExternalCall {
+	if calls == nil {
+		return nil
+	}
+	seen := make(map[dedupKey]int, len(calls))
+	var result []trawl.ExternalCall
+	for _, ec := range calls {
+		key := dedupKey{
+			serviceType: ec.ServiceType,
+			importPath:  ec.ImportPath,
+			function:    ec.Function,
+		}
+		if idx, exists := seen[key]; exists {
+			if len(ec.CallChain) < len(result[idx].CallChain) {
+				result[idx] = ec
+			}
+			continue
+		}
+		seen[key] = len(result)
+		result = append(result, ec)
+	}
+	return result
 }

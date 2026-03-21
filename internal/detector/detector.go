@@ -18,13 +18,26 @@ type detector struct {
 }
 
 // New returns a Detector. userIndicators are checked before built-in indicators;
-// first prefix match wins. New copies all slices so callers may mutate their
-// input after New returns.
+// first prefix match wins. WrapperFor entries on each indicator are expanded into
+// additional indicators with the same ServiceType and SkipInternal settings.
+// New copies all slices so callers may mutate their input after New returns.
 func New(userIndicators []trawl.Indicator) Detector {
 	merged := make([]trawl.Indicator, 0, len(userIndicators)+len(builtinIndicators))
 	merged = append(merged, userIndicators...)    // copy of user slice
 	merged = append(merged, builtinIndicators...) // snapshot of builtins
-	return &detector{indicators: merged}
+
+	var expanded []trawl.Indicator
+	for _, ind := range merged {
+		expanded = append(expanded, ind)
+		for _, wrapperPkg := range ind.WrapperFor {
+			expanded = append(expanded, trawl.Indicator{
+				Package:      wrapperPkg,
+				ServiceType:  ind.ServiceType,
+				SkipInternal: ind.SkipInternal,
+			})
+		}
+	}
+	return &detector{indicators: expanded}
 }
 
 // Detect returns the service type and true for the first indicator whose Package

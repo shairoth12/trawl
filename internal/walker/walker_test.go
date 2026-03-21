@@ -1,12 +1,16 @@
 package walker_test
 
 import (
+	"go/importer"
+	"go/types"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/callgraph/rta"
 	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/ssa/ssautil"
 
 	"github.com/shairoth12/trawl"
 	"github.com/shairoth12/trawl/internal/analysis"
@@ -67,6 +71,12 @@ func TestWalk_Direct(t *testing.T) {
 		}
 		if len(ec.CallChain) < 2 {
 			t.Errorf("ExternalCall.CallChain length = %d, want >= 2", len(ec.CallChain))
+		}
+		if ec.ResolvedVia != trawl.ResolvedViaDirect {
+			t.Errorf("ExternalCall.ResolvedVia = %q, want %q", ec.ResolvedVia, trawl.ResolvedViaDirect)
+		}
+		if ec.Confidence != trawl.ConfidenceHigh {
+			t.Errorf("ExternalCall.Confidence = %q, want %q", ec.Confidence, trawl.ConfidenceHigh)
 		}
 	}
 }
@@ -231,5 +241,190 @@ func TestWalk_RTA(t *testing.T) {
 		if ec.ServiceType != trawl.ServiceTypeHTTP {
 			t.Errorf("ExternalCall.ServiceType = %q, want %q", ec.ServiceType, trawl.ServiceTypeHTTP)
 		}
+	}
+}
+
+// importType imports pkgPath and returns the named type typeName from it.
+func importType(t *testing.T, pkgPath, typeName string) types.Type {
+	t.Helper()
+	pkg, err := importer.Default().Import(pkgPath)
+	if err != nil {
+		t.Fatalf("importer.Default().Import(%q): %v", pkgPath, err)
+	}
+	obj := pkg.Scope().Lookup(typeName)
+	if obj == nil {
+		t.Fatalf("type %s.%s not found", pkgPath, typeName)
+	}
+	return obj.Type()
+}
+
+func TestIsUbiquitousInterface(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		typ  func(t *testing.T) types.Type
+		want bool
+	}{
+		{
+			name: "builtin_error",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				return types.Universe.Lookup("error").Type()
+			},
+			want: true,
+		},
+		{
+			name: "io_Reader",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				return importType(t, "io", "Reader")
+			},
+			want: true,
+		},
+		{
+			name: "fmt_Stringer",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				return importType(t, "fmt", "Stringer")
+			},
+			want: true,
+		},
+		{
+			name: "context_Context",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				return importType(t, "context", "Context")
+			},
+			want: true,
+		},
+		{
+			name: "sort_Interface",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				return importType(t, "sort", "Interface")
+			},
+			want: true,
+		},
+		{
+			name: "io_Writer",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				return importType(t, "io", "Writer")
+			},
+			want: true,
+		},
+		{
+			name: "custom_interface_not_ubiquitous",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				pkg := types.NewPackage("example.com/mypkg", "mypkg")
+				iface := types.NewInterfaceType(nil, nil)
+				iface.Complete()
+				name := types.NewTypeName(0, pkg, "MyIface", nil)
+				named := types.NewNamed(name, iface, nil)
+				return named
+			},
+			want: false,
+		},
+		{
+			name: "non_Named_type",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				iface := types.NewInterfaceType(nil, nil)
+				iface.Complete()
+				return iface
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			typ := tt.typ(t)
+			got := walker.IsUbiquitousInterface(typ)
+			if got != tt.want {
+				t.Errorf("IsUbiquitousInterface(%v) = %v, want %v", typ, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsMockMethod(t *testing.T) {
+	t.Parallel()
+
+	root := moduleRoot(t)
+	result, err := analysis.Load(t.Context(), root, "./testdata/mockfilter", analysis.AlgoCHA)
+	if err != nil {
+		t.Fatalf("analysis.Load(mockfilter, CHA): %v", err)
+	}
+
+	type fnCase struct {
+		pattern string
+		fn      *ssa.Function
+		want    bool
+	}
+	cases := []fnCase{
+		{pattern: ".MockStore).Get", want: true},
+		{pattern: ".RealStore).Get", want: false},
+		{pattern: ".HandleMock", want: false},
+	}
+
+	for fn := range ssautil.AllFunctions(result.Prog) {
+		name := fn.String()
+		for i := range cases {
+			if strings.Contains(name, cases[i].pattern) {
+				cases[i].fn = fn
+			}
+		}
+	}
+
+	for _, tc := range cases {
+		if tc.fn == nil {
+			t.Fatalf("SSA function matching %q not found", tc.pattern)
+		}
+		t.Run(tc.pattern, func(t *testing.T) {
+			t.Parallel()
+			got := walker.IsMockMethod(tc.fn)
+			if got != tc.want {
+				t.Errorf("IsMockMethod(%s) = %v, want %v", tc.fn, got, tc.want)
+			}
+			gotRecv := walker.IsMockReceiver(tc.fn)
+			if gotRecv != tc.want {
+				t.Errorf("IsMockReceiver(%s) = %v, want %v", tc.fn, gotRecv, tc.want)
+			}
+		})
+	}
+}
+
+func TestInferFromTypesPkg(t *testing.T) {
+	t.Parallel()
+
+	det := detector.New(nil)
+
+	tests := []struct {
+		name       string
+		importPath string
+		want       trawl.ServiceType
+	}{
+		{"database_sql_matches_POSTGRES", "database/sql", trawl.ServiceTypePostgres},
+		{"net_http_matches_HTTP", "net/http", trawl.ServiceTypeHTTP},
+		{"fmt_no_match", "fmt", ""},
+		{"net_http_httputil_transitive_HTTP", "net/http/httputil", trawl.ServiceTypeHTTP},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pkg, err := importer.Default().Import(tt.importPath)
+			if err != nil {
+				t.Fatalf("importer.Default().Import(%q): %v", tt.importPath, err)
+			}
+			got := walker.InferFromTypesPkg(det, pkg)
+			if got != tt.want {
+				t.Errorf("InferFromTypesPkg(%q) = %q, want %q", tt.importPath, got, tt.want)
+			}
+		})
 	}
 }

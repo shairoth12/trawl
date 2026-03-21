@@ -23,6 +23,8 @@ func TestResultJSONRoundTrip(t *testing.T) {
 				File:        "handler.go",
 				Line:        42,
 				CallChain:   []string{"HandleRequest", "fetchData", "redis.Get"},
+				ResolvedVia: ResolvedViaDirect,
+				Confidence:  ConfidenceHigh,
 			},
 		},
 	}
@@ -56,6 +58,34 @@ func TestExternalCallJSONRoundTrip(t *testing.T) {
 				File:        "events.go",
 				Line:        100,
 				CallChain:   []string{"SendEvent", "pubsub.Publish"},
+				ResolvedVia: ResolvedViaDirect,
+				Confidence:  ConfidenceHigh,
+			},
+		},
+		{
+			name: "mock_inference",
+			call: ExternalCall{
+				ServiceType: ServiceTypeRedis,
+				ImportPath:  "github.com/example/cache",
+				Function:    "cache.ICache.Get",
+				File:        "handler.go",
+				Line:        30,
+				CallChain:   []string{"Handle", "cache.ICache.Get"},
+				ResolvedVia: ResolvedViaMockInference,
+				Confidence:  ConfidenceMedium,
+			},
+		},
+		{
+			name: "cross_module_inference",
+			call: ExternalCall{
+				ServiceType: ServiceTypeRedis,
+				ImportPath:  "github.com/example/rediscache",
+				Function:    "rediscache.Cache.Get",
+				File:        "handler.go",
+				Line:        50,
+				CallChain:   []string{"Handle", "rediscache.Cache.Get"},
+				ResolvedVia: ResolvedViaCrossModuleInference,
+				Confidence:  ConfidenceLow,
 			},
 		},
 		{
@@ -155,6 +185,30 @@ func TestLoadConfig(t *testing.T) {
 		_, err = LoadConfig(context.Background(), tmp.Name())
 		if err == nil {
 			t.Fatalf("LoadConfig(invalid.yaml) = nil error, want parse error")
+		}
+	})
+
+	t.Run("wrapper_for field parsed correctly", func(t *testing.T) {
+		cfg, err := LoadConfig(context.Background(), filepath.Join("testdata", "config", "wrapper.yaml"))
+		if err != nil {
+			t.Fatalf("LoadConfig(wrapper.yaml) error: %v", err)
+		}
+		if len(cfg.Indicators) != 2 {
+			t.Fatalf("LoadConfig(wrapper.yaml) = %d indicators, want 2", len(cfg.Indicators))
+		}
+
+		ind := cfg.Indicators[0]
+		if ind.Package != "github.com/example/rediscache" {
+			t.Errorf("Indicators[0].Package = %q, want %q", ind.Package, "github.com/example/rediscache")
+		}
+		if len(ind.WrapperFor) != 2 {
+			t.Fatalf("Indicators[0].WrapperFor len = %d, want 2", len(ind.WrapperFor))
+		}
+		if ind.WrapperFor[0] != "github.com/custom-redis/client" {
+			t.Errorf("Indicators[0].WrapperFor[0] = %q, want %q", ind.WrapperFor[0], "github.com/custom-redis/client")
+		}
+		if ind.WrapperFor[1] != "github.com/another-redis/lib" {
+			t.Errorf("Indicators[0].WrapperFor[1] = %q, want %q", ind.WrapperFor[1], "github.com/another-redis/lib")
 		}
 	})
 }

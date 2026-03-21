@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -83,6 +84,12 @@ func TestIntegration_Basic(t *testing.T) {
 		}
 		if len(ec.CallChain) < 2 {
 			t.Errorf("ExternalCall.CallChain length = %d, want >= 2", len(ec.CallChain))
+		}
+		if ec.ResolvedVia != trawl.ResolvedViaDirect {
+			t.Errorf("ExternalCall.ResolvedVia = %q, want %q", ec.ResolvedVia, trawl.ResolvedViaDirect)
+		}
+		if ec.Confidence != trawl.ConfidenceHigh {
+			t.Errorf("ExternalCall.Confidence = %q, want %q", ec.Confidence, trawl.ConfidenceHigh)
 		}
 	}
 }
@@ -292,5 +299,25 @@ func TestIntegration_CHA_MockFilterSuppressesFalsePositive(t *testing.T) {
 	}
 	if seen[trawl.ServiceTypeHTTP] {
 		t.Errorf("HTTP detected via MockStore — mock filter failed; saw %v", seen)
+	}
+}
+
+func TestIntegration_NoMockNamesInOutput(t *testing.T) {
+	t.Parallel()
+
+	// Run the mock filter fixture under CHA. Any mock-inferred results must
+	// use interface method labels, not concrete mock type names like
+	// "(*MockStore).Get" or "MockStore".
+	out := pipeline(t, "./testdata/mockfilter", "HandleMock", nil, analysis.AlgoCHA)
+
+	for _, ec := range out.ExternalCalls {
+		if strings.Contains(ec.Function, "MockStore") {
+			t.Errorf("Function field contains mock type name: %q", ec.Function)
+		}
+		for _, link := range ec.CallChain {
+			if strings.Contains(link, "MockStore") {
+				t.Errorf("CallChain element contains mock type name: %q", link)
+			}
+		}
 	}
 }
