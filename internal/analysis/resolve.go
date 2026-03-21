@@ -70,7 +70,9 @@ func resolveMethod(ssaPkg *ssa.Package, entry string) (*ssa.Function, error) {
 }
 
 // resolveBareMethod scans all named types in the package for a method named
-// name. Returns an error if zero or more than one match is found.
+// name. Types whose name begins with "Mock" are skipped; the user can still
+// target them explicitly using the "Type.Method" format. Returns an error if
+// zero or more than one non-mock match is found.
 func resolveBareMethod(ssaPkg *ssa.Package, name string) (*ssa.Function, error) {
 	prog := ssaPkg.Prog
 	var matches []*ssa.Function
@@ -82,6 +84,9 @@ func resolveBareMethod(ssaPkg *ssa.Package, name string) (*ssa.Function, error) 
 		}
 		named, ok := typeMem.Type().(*types.Named)
 		if !ok {
+			continue
+		}
+		if strings.HasPrefix(named.Obj().Name(), "Mock") {
 			continue
 		}
 		for method := range named.Methods() {

@@ -24,3 +24,11 @@ func (c Config) Validate() {}
 // Handle processes a configuration-change event.
 // Combined with (*Handler).Handle, this makes "Handle" an ambiguous bare name.
 func (c Config) Handle() {}
+
+// MockHandler is a test double for Handler.
+// It deliberately shares method names with Handler to verify that bare-name
+// resolution ignores types prefixed with "Mock".
+type MockHandler struct{}
+
+// ServeHTTP satisfies the same interface as (*Handler).ServeHTTP.
+func (m *MockHandler) ServeHTTP() {}

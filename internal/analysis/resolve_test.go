@@ -42,6 +42,7 @@ func TestResolve(t *testing.T) {
 			name:       "bare_method_unique",
 			entry:      "ServeHTTP",
 			wantFnName: "ServeHTTP",
+			// MockHandler.ServeHTTP exists in the fixture but must be ignored.
 		},
 		{
 			name:            "bare_method_ambiguous",
