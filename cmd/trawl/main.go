@@ -112,6 +112,14 @@ func run(args []string) error {
 		calls = deduplicateCalls(calls)
 	}
 
+	for i := range calls {
+		calls[i].ShortFunction = trawl.ShortenName(calls[i].Function)
+		calls[i].ShortCallChain = make([]string, len(calls[i].CallChain))
+		for j, name := range calls[i].CallChain {
+			calls[i].ShortCallChain[j] = trawl.ShortenName(name)
+		}
+	}
+
 	out := trawl.NewResult(fn.String(), loadResult.SSAPkg.Pkg.Path())
 	out.ExternalCalls = calls
 	if *dedupFlag {

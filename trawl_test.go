@@ -11,20 +11,83 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+func TestShortenName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "generic_with_nested_paths",
+			input: "github.com/foo/rediscache.IRedisCache[*github.com/foo/bar.CacheItem, github.com/foo/baz.Cache].Set",
+			want:  "IRedisCache.Set",
+		},
+		{
+			name:  "pointer_receiver_with_path",
+			input: "(*github.com/foo/pkg.TypeName).Method",
+			want:  "(*TypeName).Method",
+		},
+		{
+			name:  "cloud_style_path",
+			input: "cloud.google.com/go/datastore.NameKey",
+			want:  "NameKey",
+		},
+		{
+			name:  "interface_method_with_path",
+			input: "github.com/foo/msgraph.Authenticator.GetTokenRoles",
+			want:  "Authenticator.GetTokenRoles",
+		},
+		{
+			name:  "stdlib_with_slash",
+			input: "net/http.Get",
+			want:  "Get",
+		},
+		{
+			name:  "no_path_no_generics",
+			input: "HandleRequest",
+			want:  "HandleRequest",
+		},
+		{
+			name:  "already_short_pointer_receiver",
+			input: "(*userDetails).GetUserDetails",
+			want:  "(*userDetails).GetUserDetails",
+		},
+		{
+			name:  "generic_single_param",
+			input: "github.com/foo/msgraph.IBatcher[encoding/json.RawMessage].SendBatchRawResponse",
+			want:  "IBatcher.SendBatchRawResponse",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ShortenName(tt.input)
+			if got != tt.want {
+				t.Errorf("ShortenName(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResultJSONRoundTrip(t *testing.T) {
 	want := Result{
 		EntryPoint: "github.com/example/app.HandleRequest",
 		Package:    "github.com/example/app",
 		ExternalCalls: []ExternalCall{
 			{
-				ServiceType: ServiceTypeRedis,
-				ImportPath:  "github.com/your-org/infra/redis",
-				Function:    "Get",
-				File:        "handler.go",
-				Line:        42,
-				CallChain:   []string{"HandleRequest", "fetchData", "redis.Get"},
-				ResolvedVia: ResolvedViaDirect,
-				Confidence:  ConfidenceHigh,
+				ServiceType:    ServiceTypeRedis,
+				ImportPath:     "github.com/your-org/infra/redis",
+				Function:       "Get",
+				File:           "handler.go",
+				Line:           42,
+				CallChain:      []string{"HandleRequest", "fetchData", "redis.Get"},
+				ResolvedVia:    ResolvedViaDirect,
+				Confidence:     ConfidenceHigh,
+				ShortFunction:  "Get",
+				ShortCallChain: []string{"HandleRequest", "fetchData", "redis.Get"},
 			},
 		},
 	}

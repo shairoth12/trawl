@@ -65,6 +65,14 @@ func pipeline(
 		t.Fatalf("Walk(%q): %v", entryName, err)
 	}
 
+	for i := range calls {
+		calls[i].ShortFunction = trawl.ShortenName(calls[i].Function)
+		calls[i].ShortCallChain = make([]string, len(calls[i].CallChain))
+		for j, name := range calls[i].CallChain {
+			calls[i].ShortCallChain[j] = trawl.ShortenName(name)
+		}
+	}
+
 	out := trawl.NewResult(fn.String(), loadResult.SSAPkg.Pkg.Path())
 	out.ExternalCalls = calls
 	return out
@@ -90,6 +98,18 @@ func TestIntegration_Basic(t *testing.T) {
 		}
 		if ec.Confidence != trawl.ConfidenceHigh {
 			t.Errorf("ExternalCall.Confidence = %q, want %q", ec.Confidence, trawl.ConfidenceHigh)
+		}
+		if ec.ShortFunction == "" {
+			t.Error("ExternalCall.ShortFunction is empty, want non-empty")
+		}
+		if len(ec.ShortFunction) > len(ec.Function) {
+			t.Errorf("ShortFunction %q is longer than Function %q", ec.ShortFunction, ec.Function)
+		}
+		if len(ec.ShortCallChain) != len(ec.CallChain) {
+			t.Errorf("ShortCallChain length = %d, want %d (same as CallChain)", len(ec.ShortCallChain), len(ec.CallChain))
+		}
+		if !strings.Contains(ec.Function, "/") && ec.ShortFunction != ec.Function {
+			t.Errorf("ShortFunction %q != Function %q (no path to strip)", ec.ShortFunction, ec.Function)
 		}
 	}
 }

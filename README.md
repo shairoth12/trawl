@@ -55,13 +55,19 @@ Sample output:
     {
       "service_type": "HTTP",
       "import_path": "net/http",
-      "function": "(*Client).Do",
+      "function": "(*net/http.Client).Do",
+      "short_function": "(*Client).Do",
       "file": "/home/user/myapp/cmd/server/handler.go",
       "line": 42,
       "call_chain": [
         "github.com/example/myapp/cmd/server.HandleRequest",
         "github.com/example/myapp/internal/client.(*HTTPClient).Fetch",
-        "net/http.(*Client).Do"
+        "(*net/http.Client).Do"
+      ],
+      "short_call_chain": [
+        "HandleRequest",
+        "(*HTTPClient).Fetch",
+        "(*Client).Do"
       ],
       "resolved_via": "direct",
       "confidence": "high"
@@ -69,13 +75,19 @@ Sample output:
     {
       "service_type": "REDIS",
       "import_path": "github.com/redis/go-redis/v9",
-      "function": "(*Client).Get",
+      "function": "(*github.com/redis/go-redis/v9.Client).Get",
+      "short_function": "(*Client).Get",
       "file": "/home/user/myapp/cmd/server/handler.go",
       "line": 57,
       "call_chain": [
         "github.com/example/myapp/cmd/server.HandleRequest",
         "github.com/example/myapp/internal/cache.(*Store).Lookup",
-        "github.com/redis/go-redis/v9.(*Client).Get"
+        "(*github.com/redis/go-redis/v9.Client).Get"
+      ],
+      "short_call_chain": [
+        "HandleRequest",
+        "(*Store).Lookup",
+        "(*Client).Get"
       ],
       "resolved_via": "direct",
       "confidence": "high"
@@ -288,10 +300,12 @@ Each element of `external_calls`:
 |-------|------|-------------|
 | `service_type` | string | Matched service label (e.g. `"HTTP"`, `"REDIS"`, or a custom label) |
 | `import_path` | string | Full Go import path of the package where the call was detected |
-| `function` | string | Function or method name within that package. For calls resolved through interface dispatch on a mock type, this is the interface method label (`InterfaceType.MethodName`) rather than the concrete mock type name. |
+| `function` | string | Fully-qualified function or method name (includes import path prefix). For calls resolved through interface dispatch on a mock type, this is the interface method label (`InterfaceType.MethodName`) rather than the concrete mock type name. |
+| `short_function` | string | `function` with module path prefixes and generic type parameters stripped (e.g. `"(*github.com/foo/bar.Client).Do"` → `"(*Client).Do"`). Always present. |
 | `file` | string | Absolute path to the source file containing the call site |
 | `line` | integer | Line number of the call site; `0` for synthetic call graph edges |
 | `call_chain` | array of strings | Ordered sequence of fully-qualified function names from the entry point to the detected call. Interface dispatch entries through mock types use the interface method label. |
+| `short_call_chain` | array of strings | `call_chain` with the same stripping applied to each entry. Suitable for display in LLM prompts or human-readable reports. Always present. |
 | `resolved_via` | string | How the call was discovered. See table below. |
 | `confidence` | string | Reliability of the detection. See table below. |
 
@@ -310,6 +324,27 @@ Each element of `external_calls`:
 | `high` | Direct indicator match. |
 | `medium` | Mock inference — likely correct but depends on import conventions. |
 | `low` | Cross-module transitive inference — treat as a hint, verify manually. |
+
+### Name shortening
+
+`short_function` and `short_call_chain` are produced by the exported
+`ShortenName(s string) string` function. It applies two transformations in
+order:
+
+1. Strip generic type parameter blocks — any `[...]` segment (including nested
+   brackets) is removed. `"Cache[K, V].Set"` becomes `"Cache.Set"`.
+2. Strip the import path prefix — the last `/`-separated component is found and
+   then the package qualifier (everything up to and including the first `.`) is
+   removed. `"github.com/foo/bar.Get"` becomes `"Get"`.
+
+Pointer-receiver prefixes (`(*`) are preserved throughout. Examples:
+
+| Raw `function` value | `short_function` |
+|----------------------|-----------------|
+| `"github.com/foo/bar.Get"` | `"Get"` |
+| `"(*github.com/foo/bar.Client).Do"` | `"(*Client).Do"` |
+| `"github.com/foo/bar.Cache[T].Set"` | `"Cache.Set"` |
+| `"(*github.com/foo/bar.Cache[K, V]).Get"` | `"(*Cache).Get"` |
 
 ## License
 
