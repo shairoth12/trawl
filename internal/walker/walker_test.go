@@ -398,6 +398,52 @@ func TestIsMockMethod(t *testing.T) {
 	}
 }
 
+// walkFixtureCHA is like walkFixture but uses CHA instead of VTA, and accepts
+// optional custom indicators for the detector.
+func walkFixtureCHA(t *testing.T, pattern, entry string, indicators []trawl.Indicator) []trawl.ExternalCall {
+	t.Helper()
+	root := moduleRoot(t)
+	result, err := analysis.Load(t.Context(), root, pattern, analysis.AlgoCHA)
+	if err != nil {
+		t.Fatalf("analysis.Load(%q, CHA): %v", pattern, err)
+	}
+	fn, err := analysis.Resolve(result, entry)
+	if err != nil {
+		t.Fatalf("analysis.Resolve(%q): %v", entry, err)
+	}
+	det := detector.New(indicators)
+	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset)
+	calls, err := w.Walk(fn)
+	if err != nil {
+		t.Fatalf("Walk(%q): %v", entry, err)
+	}
+	return calls
+}
+
+func TestWalk_GenericInterface_DirectDetection(t *testing.T) {
+	t.Parallel()
+
+	calls := walkFixtureCHA(t, "./testdata/generic", "HandleGeneric", nil)
+
+	if len(calls) == 0 {
+		t.Fatal("Walk returned no calls; expected at least one POSTGRES call")
+	}
+
+	var foundPostgres bool
+	for _, ec := range calls {
+		if ec.ServiceType == trawl.ServiceTypePostgres {
+			foundPostgres = true
+			if ec.ResolvedVia == trawl.ResolvedViaMockInference {
+				t.Errorf("POSTGRES call resolved_via = %q, want %q or %q",
+					ec.ResolvedVia, trawl.ResolvedViaDirect, trawl.ResolvedViaCrossModuleInference)
+			}
+		}
+	}
+	if !foundPostgres {
+		t.Errorf("no POSTGRES call found; got %d calls: %v", len(calls), calls)
+	}
+}
+
 func TestInferFromTypesPkg(t *testing.T) {
 	t.Parallel()
 

@@ -341,3 +341,31 @@ func TestIntegration_NoMockNamesInOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestIntegration_CHA_GenericInterface_DirectDetection(t *testing.T) {
+	t.Parallel()
+
+	out := pipeline(t, "./testdata/generic", "HandleGeneric", nil, analysis.AlgoCHA)
+
+	if len(out.ExternalCalls) == 0 {
+		t.Fatal("pipeline returned no external calls; expected at least one POSTGRES call")
+	}
+
+	var foundPostgres bool
+	for _, ec := range out.ExternalCalls {
+		if ec.ServiceType == trawl.ServiceTypePostgres {
+			foundPostgres = true
+			if ec.ResolvedVia == trawl.ResolvedViaMockInference {
+				t.Errorf("POSTGRES call resolved_via = %q, want %q or %q",
+					ec.ResolvedVia, trawl.ResolvedViaDirect, trawl.ResolvedViaCrossModuleInference)
+			}
+		}
+		// No call should use mock type names.
+		if strings.Contains(ec.Function, "MockCache") {
+			t.Errorf("Function field contains mock type name: %q", ec.Function)
+		}
+	}
+	if !foundPostgres {
+		t.Errorf("no POSTGRES call found in output: %v", out.ExternalCalls)
+	}
+}

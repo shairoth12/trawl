@@ -81,23 +81,51 @@ func (w *Walker) dfs(
 		fn := callee.Func
 		pkg := fn.Package()
 		if pkg == nil {
-			// Generic instantiations lose their SSA package. For interface
-			// dispatches to mock types (common with generic interfaces like
-			// IRedisCache[T]), try to infer the service type from the
-			// receiver type's package imports.
-			if edge.Site != nil && edge.Site.Common().IsInvoke() && isMockReceiver(fn) {
-				if svcType := w.inferFromReceiverPkg(fn); svcType != "" {
-					ifaceLabel := interfaceMethodLabel(edge.Site.Common())
-					results = append(results, trawl.ExternalCall{
-						ServiceType: svcType,
-						ImportPath:  receiverPkgPath(fn),
-						Function:    ifaceLabel,
-						File:        w.posFile(edge),
-						Line:        w.posLine(edge),
-						CallChain:   appendCopy(chain, ifaceLabel),
-						ResolvedVia: trawl.ResolvedViaMockInference,
-						Confidence:  trawl.ConfidenceMedium,
-					})
+			// Generic instantiations (e.g., Cache[T]) lose their SSA
+			// package. Recover the package path from the receiver's
+			// named type and mirror the normal Site 2-4 logic.
+			recvPath := receiverPkgPath(fn)
+			if recvPath == "" {
+				continue
+			}
+
+			if isUbiquitousDispatch(edge) {
+				continue
+			}
+
+			// Same-module generics: recurse into the callee.
+			if w.module != "" && strings.HasPrefix(recvPath, w.module) {
+				results = append(results, w.dfs(callee, appendCopy(chain, fn.String()), visited)...)
+				continue
+			}
+
+			// External generic type: attempt classification.
+			if edge.Site != nil && edge.Site.Common().IsInvoke() {
+				recvPkg := receiverTypesPkg(fn)
+				if recvPkg != nil {
+					if svcType := w.inferFromTypesPkg(recvPkg); svcType != "" {
+						ifaceLabel := interfaceMethodLabel(edge.Site.Common())
+						resolvedVia := trawl.ResolvedViaCrossModuleInference
+						confidence := trawl.ConfidenceLow
+						if isMockReceiver(fn) {
+							resolvedVia = trawl.ResolvedViaMockInference
+							confidence = trawl.ConfidenceMedium
+						}
+						if _, ok := w.det.Detect(recvPath); ok {
+							resolvedVia = trawl.ResolvedViaDirect
+							confidence = trawl.ConfidenceHigh
+						}
+						results = append(results, trawl.ExternalCall{
+							ServiceType: svcType,
+							ImportPath:  recvPath,
+							Function:    ifaceLabel,
+							File:        w.posFile(edge),
+							Line:        w.posLine(edge),
+							CallChain:   appendCopy(chain, ifaceLabel),
+							ResolvedVia: resolvedVia,
+							Confidence:  confidence,
+						})
+					}
 				}
 			}
 			continue
@@ -122,6 +150,14 @@ func (w *Walker) dfs(
 				if edge.Site != nil && edge.Site.Common().IsInvoke() {
 					if svcType := w.inferFromImports(pkg); svcType != "" {
 						ifaceLabel := interfaceMethodLabel(edge.Site.Common())
+						resolvedVia := trawl.ResolvedViaMockInference
+						confidence := trawl.ConfidenceMedium
+						// If the mock's package matches a detector indicator,
+						// the classification is confirmed — upgrade confidence.
+						if _, ok := w.det.Detect(pkgPath); ok {
+							resolvedVia = trawl.ResolvedViaDirect
+							confidence = trawl.ConfidenceHigh
+						}
 						results = append(results, trawl.ExternalCall{
 							ServiceType: svcType,
 							ImportPath:  pkgPath,
@@ -129,8 +165,8 @@ func (w *Walker) dfs(
 							File:        w.posFile(edge),
 							Line:        w.posLine(edge),
 							CallChain:   appendCopy(chain, ifaceLabel),
-							ResolvedVia: trawl.ResolvedViaMockInference,
-							Confidence:  trawl.ConfidenceMedium,
+							ResolvedVia: resolvedVia,
+							Confidence:  confidence,
 						})
 					}
 				}
@@ -340,17 +376,6 @@ func isMockReceiver(fn *ssa.Function) bool {
 		return false
 	}
 	return strings.HasPrefix(named.Obj().Name(), "Mock")
-}
-
-// inferFromReceiverPkg infers a service type from the receiver type's package
-// imports. This handles generic mock types where fn.Package() returns nil but
-// the receiver's *types.Named still carries a valid package reference.
-func (w *Walker) inferFromReceiverPkg(fn *ssa.Function) trawl.ServiceType {
-	typesPkg := receiverTypesPkg(fn)
-	if typesPkg == nil {
-		return ""
-	}
-	return w.inferFromTypesPkg(typesPkg)
 }
 
 // receiverTypesPkg returns the *types.Package of fn's receiver type, or nil.
