@@ -47,6 +47,9 @@ func New(graph *callgraph.Graph, d detector.Detector, module string, fset *token
 //
 // The returned slice is always non-nil, even when no external calls are found.
 func (w *Walker) Walk(entry *ssa.Function) ([]trawl.ExternalCall, error) {
+	if w.graph == nil {
+		return nil, fmt.Errorf("call graph is nil — did you forget to call rta.Analyze?")
+	}
 	node := w.graph.Nodes[entry]
 	if node == nil {
 		return nil, fmt.Errorf("entry function %s not found in call graph — try --algo vta", entry.String())
@@ -94,7 +97,7 @@ func (w *Walker) dfs(
 			}
 
 			// Same-module generics: recurse into the callee.
-			if w.module != "" && strings.HasPrefix(recvPath, w.module) {
+			if w.module == "" || strings.HasPrefix(recvPath, w.module) {
 				results = append(results, w.dfs(callee, appendCopy(chain, fn.String()), visited)...)
 				continue
 			}
@@ -182,7 +185,7 @@ func (w *Walker) dfs(
 			results = append(results, trawl.ExternalCall{
 				ServiceType: svcType,
 				ImportPath:  pkgPath,
-				Function:    fn.RelString(pkg.Pkg),
+				Function:    fn.String(),
 				File:        w.posFile(edge),
 				Line:        w.posLine(edge),
 				CallChain:   appendCopy(chain, fn.String()),
@@ -204,7 +207,7 @@ func (w *Walker) dfs(
 					results = append(results, trawl.ExternalCall{
 						ServiceType: svcType,
 						ImportPath:  pkgPath,
-						Function:    fn.RelString(pkg.Pkg),
+						Function:    fn.String(),
 						File:        w.posFile(edge),
 						Line:        w.posLine(edge),
 						CallChain:   appendCopy(chain, fn.String()),

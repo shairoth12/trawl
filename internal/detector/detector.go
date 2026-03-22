@@ -49,7 +49,7 @@ func (d *detector) Detect(importPath string) (trawl.ServiceType, bool) {
 		if strings.HasPrefix(importPath, ind.Package) {
 			if ind.SkipInternal {
 				rest := importPath[len(ind.Package):]
-				if strings.Contains(rest, "/internal") {
+				if strings.Contains(rest, "/internal/") || strings.HasSuffix(rest, "/internal") {
 					continue
 				}
 			}

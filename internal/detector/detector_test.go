@@ -119,6 +119,12 @@ func TestDetect_SkipInternal(t *testing.T) {
 			wantOK:     false,
 		},
 		{
+			name:       "redis_internal_prefix_not_skipped",
+			importPath: "github.com/redis/go-redis/v9/internalization",
+			want:       trawl.ServiceTypeRedis,
+			wantOK:     true,
+		},
+		{
 			name:       "grpc_internal_skipped",
 			importPath: "google.golang.org/grpc/internal/transport",
 			want:       "",
