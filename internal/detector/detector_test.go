@@ -20,6 +20,7 @@ func TestDetect(t *testing.T) {
 		{"grpc_subpkg", "google.golang.org/grpc/credentials", trawl.ServiceTypeGRPC, true},
 		{"redis_versioned", "github.com/go-redis/redis/v9", trawl.ServiceTypeRedis, true},
 		{"pgx_versioned", "github.com/jackc/pgx/v5", trawl.ServiceTypePostgres, true},
+		{"redis_boundary_false_positive", "github.com/go-redis/redis2", "", false},
 		{"no_match", "github.com/unrelated/pkg", "", false},
 	}
 
@@ -76,6 +77,41 @@ func TestDetect_WrapperFor(t *testing.T) {
 		{"wrapper_matches", "github.com/example/rediscache/cache", trawl.ServiceTypeRedis, true},
 		{"wrapped_lib_matches", "github.com/custom-redis/client/v2", trawl.ServiceTypeRedis, true},
 		{"unrelated", "github.com/unrelated/pkg", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := d.Detect(tt.importPath)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("Detect(%q) = (%q, %v), want (%q, %v)",
+					tt.importPath, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestDetect_PrefixBoundary(t *testing.T) {
+	t.Parallel()
+
+	// Verify that a longer package name that merely starts with an indicator
+	// prefix is NOT matched — only exact matches or sub-packages (via '/') are.
+	d := New(nil) // uses builtin indicators
+
+	tests := []struct {
+		name       string
+		importPath string
+		want       trawl.ServiceType
+		wantOK     bool
+	}{
+		// Indicator: "database/sql" (POSTGRES). Must not match sqlmock.
+		{"sql_exact", "database/sql", trawl.ServiceTypePostgres, true},
+		{"sql_subpkg", "database/sql/driver", trawl.ServiceTypePostgres, true},
+		{"sqlmock_no_match", "database/sqlmock", "", false},
+		// Indicator: "net/http" (HTTP). Must not match hypothetical net/http2 prefix collision.
+		{"http_exact", "net/http", trawl.ServiceTypeHTTP, true},
+		{"http_subpkg", "net/http/httputil", trawl.ServiceTypeHTTP, true},
+		{"http_suffix_no_match", "net/http2", "", false},
 	}
 
 	for _, tt := range tests {

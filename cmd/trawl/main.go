@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/tools/go/callgraph/rta"
 	"golang.org/x/tools/go/ssa"
@@ -50,6 +52,7 @@ func run(args []string) error {
 	algoStr := fs.String("algo", string(analysis.AlgoVTA), "Call graph algorithm: vta (default), rta, or cha")
 	scope := fs.String("scope", "", "Extra package patterns for type visibility (comma-separated)")
 	dedupFlag := fs.Bool("dedup", false, "Deduplicate results by (service_type, import_path, function), keeping shortest call chain")
+	timeoutStr := fs.String("timeout", "10m", "Maximum duration for the analysis (e.g. 30s, 5m, 1h); 0 means no timeout")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -65,6 +68,18 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if *timeoutStr != "" {
+		d, err := time.ParseDuration(*timeoutStr)
+		if err != nil {
+			return fmt.Errorf("invalid --timeout %q: %w", *timeoutStr, err)
+		}
+		if d > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+	}
 
 	cfg, err := trawl.LoadConfig(ctx, *configPath)
 	if err != nil {
@@ -106,6 +121,18 @@ func run(args []string) error {
 	calls, err := w.Walk(fn)
 	if err != nil {
 		return fmt.Errorf("walking call graph: %w", err)
+	}
+
+	// Strip the working-directory prefix from file paths so output contains
+	// relative paths rather than absolute filesystem paths.
+	for i := range calls {
+		if calls[i].File != "" {
+			rel, relErr := filepath.Rel(dir, calls[i].File)
+			calls[i].File = rel
+			if relErr != nil || strings.HasPrefix(rel, "..") {
+				calls[i].File = "" // path cannot be made relative to cwd; omit
+			}
+		}
 	}
 
 	if *dedupFlag {

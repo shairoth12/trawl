@@ -132,26 +132,9 @@ func Load(ctx context.Context, dir, pattern string, algo Algo, scopePatterns ...
 	prog, ssaPkgs := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
 	prog.Build() // Build has no error return; panics on internal SSA errors.
 
-	var ssaPkg *ssa.Package
-	if len(scopePatterns) == 0 {
-		if len(ssaPkgs) == 0 || ssaPkgs[0] == nil {
-			return nil, fmt.Errorf("SSA package not found for %q", pattern)
-		}
-		ssaPkg = ssaPkgs[0]
-	} else {
-		primaryPath := findPrimaryPkgPath(pkgs, dir, pattern)
-		if primaryPath == "" {
-			return nil, fmt.Errorf("primary package not found for pattern %q among loaded packages", pattern)
-		}
-		for _, sp := range ssaPkgs {
-			if sp != nil && sp.Pkg.Path() == primaryPath {
-				ssaPkg = sp
-				break
-			}
-		}
-		if ssaPkg == nil {
-			return nil, fmt.Errorf("SSA package not found for %q", primaryPath)
-		}
+	ssaPkg, err := resolveSSAPkg(ssaPkgs, pkgs, dir, pattern, scopePatterns)
+	if err != nil {
+		return nil, err
 	}
 
 	var modulePath string
@@ -205,6 +188,29 @@ func Load(ctx context.Context, dir, pattern string, algo Algo, scopePatterns ...
 	result.Graph = graph
 
 	return result, nil
+}
+
+// resolveSSAPkg selects the SSA package to use as the analysis entry point.
+// When no scope patterns are provided, it takes the first loaded package.
+// Otherwise it locates the primary package by path, since scope loading may
+// have placed additional packages ahead of it in ssaPkgs.
+func resolveSSAPkg(ssaPkgs []*ssa.Package, pkgs []*packages.Package, dir, pattern string, scopePatterns []string) (*ssa.Package, error) {
+	if len(scopePatterns) == 0 {
+		if len(ssaPkgs) == 0 || ssaPkgs[0] == nil {
+			return nil, fmt.Errorf("SSA package not found for %q", pattern)
+		}
+		return ssaPkgs[0], nil
+	}
+	primaryPath := findPrimaryPkgPath(pkgs, dir, pattern)
+	if primaryPath == "" {
+		return nil, fmt.Errorf("primary package not found for pattern %q among loaded packages", pattern)
+	}
+	for _, sp := range ssaPkgs {
+		if sp != nil && sp.Pkg.Path() == primaryPath {
+			return sp, nil
+		}
+	}
+	return nil, fmt.Errorf("SSA package not found for %q", primaryPath)
 }
 
 // findPrimaryPkgPath returns the PkgPath of the package that matches pattern.

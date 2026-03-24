@@ -194,6 +194,76 @@ func TestExternalCallJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name:    "empty config is valid",
+			cfg:     Config{},
+			wantErr: false,
+		},
+		{
+			name: "valid indicators",
+			cfg: Config{Indicators: []Indicator{
+				{Package: "github.com/foo/bar", ServiceType: ServiceTypeRedis},
+				{Package: "database/sql", ServiceType: ServiceTypePostgres},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "valid indicator with wrapper_for",
+			cfg: Config{Indicators: []Indicator{
+				{
+					Package:     "github.com/foo/cache",
+					ServiceType: ServiceTypeRedis,
+					WrapperFor:  []string{"github.com/go-redis/redis"},
+				},
+			}},
+			wantErr: false,
+		},
+		{
+			name: "empty package",
+			cfg: Config{Indicators: []Indicator{
+				{Package: "", ServiceType: ServiceTypeHTTP},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "empty service_type",
+			cfg: Config{Indicators: []Indicator{
+				{Package: "github.com/foo/bar", ServiceType: ""},
+			}},
+			wantErr: true,
+		},
+		{
+			name: "empty wrapper_for entry",
+			cfg: Config{Indicators: []Indicator{
+				{
+					Package:     "github.com/foo/cache",
+					ServiceType: ServiceTypeRedis,
+					WrapperFor:  []string{"github.com/go-redis/redis", ""},
+				},
+			}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Errorf("Config.Validate() error = %v, wantErr = %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	t.Run("empty path returns zero Config", func(t *testing.T) {
 		cfg, err := LoadConfig(context.Background(), "")

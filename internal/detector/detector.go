@@ -46,15 +46,19 @@ func New(userIndicators []trawl.Indicator) Detector {
 // indicator matches.
 func (d *detector) Detect(importPath string) (trawl.ServiceType, bool) {
 	for _, ind := range d.indicators {
-		if strings.HasPrefix(importPath, ind.Package) {
-			if ind.SkipInternal {
-				rest := importPath[len(ind.Package):]
-				if strings.Contains(rest, "/internal/") || strings.HasSuffix(rest, "/internal") {
-					continue
-				}
-			}
-			return ind.ServiceType, true
+		if !strings.HasPrefix(importPath, ind.Package) {
+			continue
 		}
+		rest := importPath[len(ind.Package):]
+		if rest != "" && rest[0] != '/' {
+			continue // not a package boundary — e.g. "redis2" after "redis"
+		}
+		if ind.SkipInternal {
+			if strings.Contains(rest, "/internal/") || strings.HasSuffix(rest, "/internal") {
+				continue
+			}
+		}
+		return ind.ServiceType, true
 	}
 	return "", false
 }

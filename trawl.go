@@ -103,25 +103,30 @@ func ShortenName(s string) string {
 }
 
 // stripGenericParams removes Go generic type parameter blocks ([...]) from s,
-// handling nested brackets.
+// handling nested brackets. Iterative to handle strings with multiple
+// top-level bracket pairs without additional stack frames.
 func stripGenericParams(s string) string {
-	start := strings.IndexByte(s, '[')
-	if start == -1 {
-		return s
-	}
-	depth := 0
-	for i := start; i < len(s); i++ {
-		switch s[i] {
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				return stripGenericParams(s[:start] + s[i+1:])
+	for {
+		start := strings.IndexByte(s, '[')
+		if start == -1 {
+			return s
+		}
+		depth := 0
+		for i := start; i < len(s); i++ {
+			switch s[i] {
+			case '[':
+				depth++
+			case ']':
+				depth--
+				if depth == 0 {
+					s = s[:start] + s[i+1:]
+					goto next
+				}
 			}
 		}
+		return s // unmatched '[', bail
+	next:
 	}
-	return s
 }
 
 // Indicator maps an import path prefix to a named service type for detection purposes.

@@ -57,7 +57,7 @@ Sample output:
       "import_path": "net/http",
       "function": "(*net/http.Client).Do",
       "short_function": "(*Client).Do",
-      "file": "/home/user/myapp/cmd/server/handler.go",
+      "file": "cmd/server/handler.go",
       "line": 42,
       "call_chain": [
         "github.com/example/myapp/cmd/server.HandleRequest",
@@ -77,7 +77,7 @@ Sample output:
       "import_path": "github.com/redis/go-redis/v9",
       "function": "(*github.com/redis/go-redis/v9.Client).Get",
       "short_function": "(*Client).Get",
-      "file": "/home/user/myapp/cmd/server/handler.go",
+      "file": "cmd/server/handler.go",
       "line": 57,
       "call_chain": [
         "github.com/example/myapp/cmd/server.HandleRequest",
@@ -110,6 +110,7 @@ trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--s
 | `--algo` | `vta` | Call graph algorithm: `vta` (Variable Type Analysis, default), `rta` (Rapid Type Analysis), or `cha` (Class Hierarchy Analysis) |
 | `--scope` | _(none)_ | Extra package patterns for type visibility (comma-separated, e.g. `"./cmd/server"`, `"./..."`) |
 | `--dedup` | _(off)_ | Deduplicate results by `(service_type, import_path, function)`, keeping the shortest call chain per unique key; sets `deduplicated: true` in output |
+| `--timeout` | `10m` | Maximum duration for the analysis (e.g. `30s`, `5m`, `1h`); `0` disables the timeout |
 
 trawl responds to `SIGINT` and `SIGTERM` and will abort the analysis cleanly.
 Exit code is non-zero on any error; the error message is written to stderr.
@@ -302,7 +303,7 @@ Each element of `external_calls`:
 | `import_path` | string | Full Go import path of the package where the call was detected |
 | `function` | string | Fully-qualified function or method name (includes import path prefix). For calls resolved through interface dispatch on a mock type, this is the interface method label (`InterfaceType.MethodName`) rather than the concrete mock type name. |
 | `short_function` | string | `function` with module path prefixes and generic type parameters stripped (e.g. `"(*github.com/foo/bar.Client).Do"` → `"(*Client).Do"`). Always present. |
-| `file` | string | Absolute path to the source file containing the call site |
+| `file` | string | Path to the source file containing the call site, relative to the working directory |
 | `line` | integer | Line number of the call site; `0` for synthetic call graph edges |
 | `call_chain` | array of strings | Ordered sequence of fully-qualified function names from the entry point to the detected call. Interface dispatch entries through mock types use the interface method label. |
 | `short_call_chain` | array of strings | `call_chain` with the same stripping applied to each entry. Suitable for display in LLM prompts or human-readable reports. Always present. |
