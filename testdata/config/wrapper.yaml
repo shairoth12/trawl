@@ -1,0 +1,8 @@
+indicators:
+  - package: "github.com/example/rediscache"
+    service_type: "REDIS"
+    wrapper_for:
+      - "github.com/custom-redis/client"
+      - "github.com/another-redis/lib"
+  - package: "github.com/your-org/infra/pubsub"
+    service_type: "PUBSUB"

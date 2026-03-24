@@ -34,8 +34,9 @@
   "mounts": [
     "source=trawl-shell-history,target=/commandhistory,type=volume",
     "source=trawl-claude-data,target=/home/vscode/.claude,type=volume",
-    "source=trawl-copilot-data,target=/home/vscode/.vscode-server/data/User/globalStorage/github.copilot-chat,type=volume"
+    "source=trawl-copilot-data,target=/home/vscode/.vscode-server/data/User/globalStorage/github.copilot-chat,type=volume",
+    "source=${localEnv:HOME}/.agents/skills,target=/agent-skills,type=bind,readonly"
   ],
-  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postCreateCommand": "bash .devcontainer/post-create.sh && ln -sfn /agent-skills \"$HOME/.cursor/skills\"",
   "remoteUser": "vscode"
 }

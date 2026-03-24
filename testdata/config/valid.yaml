@@ -1,0 +1,5 @@
+indicators:
+  - package: "github.com/your-org/infra/redis"
+    service_type: "REDIS"
+  - package: "github.com/your-org/infra/pubsub"
+    service_type: "PUBSUB"
