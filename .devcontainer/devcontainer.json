@@ -27,7 +27,8 @@
       },
       "extensions": [
         "golang.Go",
-        "eamodio.gitlens"
+        "eamodio.gitlens",
+        "github.vscode-github-actions"
       ]
     }
   },

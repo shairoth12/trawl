@@ -12,9 +12,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -28,14 +31,64 @@ import (
 	"github.com/shairoth12/trawl/internal/walker"
 )
 
+// version, commit, and date are injected at build time via:
+//
+//	-ldflags "-X main.version=vX.Y.Z -X main.commit=abc1234 -X main.date=2006-01-02"
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+// versionInfo returns the human-readable version string, including the Go
+// version the binary was compiled with, the git commit, and the build date.
+func versionInfo() string {
+	return fmt.Sprintf("trawl %s (commit %s, built %s with %s)",
+		version, commit, date, runtime.Version())
+}
+
+// toolchainWarning returns a non-empty warning string when the binary's
+// compile-time Go version differs from the active host toolchain version.
+// hostGoVersion should be the bare version string returned by "go env GOVERSION"
+// (e.g. "go1.25.0"). Returns an empty string when the versions match or when
+// hostGoVersion is empty (best-effort check, no hard failure).
+//
+// trawl shells out to the host "go" command via go/packages; a mismatch can
+// cause cryptic load errors, so surfacing it early helps users self-diagnose.
+func toolchainWarning(hostGoVersion string) string {
+	if hostGoVersion == "" {
+		return ""
+	}
+	built := runtime.Version()
+	if built == hostGoVersion {
+		return ""
+	}
+	return fmt.Sprintf(
+		"warning: trawl was built with %s but host toolchain is %s\n"+
+			"         consider: go install github.com/shairoth12/trawl/cmd/trawl@latest",
+		built, hostGoVersion,
+	)
+}
+
+// activeGoVersion runs "go env GOVERSION" and returns the trimmed output.
+// Returns an empty string on any error so the caller can treat this as a
+// best-effort probe.
+func activeGoVersion() string {
+	out, err := exec.Command("go", "env", "GOVERSION").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "trawl: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+func run(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("trawl", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
@@ -46,6 +99,7 @@ func run(args []string) error {
 		fs.PrintDefaults()
 	}
 
+	showVersion := fs.Bool("version", false, "Print version and exit")
 	pkg := fs.String("pkg", ".", "Go package pattern to analyze")
 	entry := fs.String("entry", "", "Entry point function name (required)")
 	configPath := fs.String("config", "", "Path to YAML config file for custom indicators")
@@ -59,6 +113,15 @@ func run(args []string) error {
 			return nil
 		}
 		return err
+	}
+
+	if *showVersion {
+		_, err := fmt.Fprintln(stdout, versionInfo())
+		return err
+	}
+
+	if warn := toolchainWarning(activeGoVersion()); warn != "" {
+		_, _ = fmt.Fprintln(os.Stderr, warn)
 	}
 
 	if *entry == "" {
@@ -153,7 +216,7 @@ func run(args []string) error {
 		out.Deduplicated = true
 	}
 
-	enc := json.NewEncoder(os.Stdout)
+	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
 		return fmt.Errorf("encoding output: %w", err)
