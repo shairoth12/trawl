@@ -30,12 +30,14 @@ builds:
 
 archives:
   - id: trawl
-    builds:
+    ids:
       - trawl
-    format: tar.gz
+    formats:
+      - tar.gz
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
     name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     files:
       - README.md

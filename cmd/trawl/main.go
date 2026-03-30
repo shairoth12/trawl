@@ -31,15 +31,20 @@ import (
 	"github.com/shairoth12/trawl/internal/walker"
 )
 
-// version is the binary version, injected at build time via:
+// version, commit, and date are injected at build time via:
 //
-//	-ldflags "-X main.version=vX.Y.Z"
-var version = "dev"
+//	-ldflags "-X main.version=vX.Y.Z -X main.commit=abc1234 -X main.date=2006-01-02"
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 // versionInfo returns the human-readable version string, including the Go
-// version the binary was compiled with.
+// version the binary was compiled with, the git commit, and the build date.
 func versionInfo() string {
-	return fmt.Sprintf("trawl %s (built with %s)", version, runtime.Version())
+	return fmt.Sprintf("trawl %s (commit %s, built %s with %s)",
+		version, commit, date, runtime.Version())
 }
 
 // toolchainWarning returns a non-empty warning string when the binary's
