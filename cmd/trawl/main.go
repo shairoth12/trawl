@@ -116,12 +116,12 @@ func run(args []string, stdout io.Writer) error {
 	}
 
 	if *showVersion {
-		fmt.Fprintln(stdout, versionInfo())
-		return nil
+		_, err := fmt.Fprintln(stdout, versionInfo())
+		return err
 	}
 
 	if warn := toolchainWarning(activeGoVersion()); warn != "" {
-		fmt.Fprintln(os.Stderr, warn)
+		_, _ = fmt.Fprintln(os.Stderr, warn)
 	}
 
 	if *entry == "" {
