@@ -1,4 +1,4 @@
-.PHONY: build test lint clean all
+.PHONY: build test lint clean all release-dry-run
 
 BINARY_NAME := trawl
 
@@ -12,7 +12,13 @@ lint:
 	golangci-lint run ./...
 
 clean:
-	rm -rf bin/
+	rm -rf bin/ dist/
 	go clean
+
+# release-dry-run builds a snapshot release locally without publishing.
+# Requires goreleaser: https://goreleaser.com/install/
+# Use this before tagging to verify the release config produces valid artifacts.
+release-dry-run:
+	goreleaser release --snapshot --clean
 
 all: lint test build

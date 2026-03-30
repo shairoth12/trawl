@@ -1,0 +1,85 @@
+version: 2
+
+project_name: trawl
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: trawl
+    main: ./cmd/trawl
+    binary: trawl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: trawl
+    builds:
+      - trawl
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - id: trawl
+    artifacts: archive
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} {{ .Tag }}"
+  # Sourced from CHANGELOG.md: the section matching the current tag.
+  # GoReleaser extracts the block between the current and previous tag headers.
+  header: |
+    > **Note**: trawl shells out to your local `go` toolchain at runtime.
+    > Pre-built binaries in this release are built with Go {{ .Env.GOVERSION }}.
+    > For best compatibility, install via `go install`:
+    >
+    > ```
+    > go install github.com/shairoth12/trawl/cmd/trawl@{{ .Tag }}
+    > ```
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^fix"
+      order: 1
+    - title: Other Changes
+      order: 999

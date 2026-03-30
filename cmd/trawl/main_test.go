@@ -1,10 +1,109 @@
 package main
 
 import (
+	"bytes"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/shairoth12/trawl"
 )
+
+func TestVersionInfo(t *testing.T) {
+	t.Parallel()
+
+	got := versionInfo()
+
+	if !strings.HasPrefix(got, "trawl ") {
+		t.Errorf("versionInfo() = %q, want prefix %q", got, "trawl ")
+	}
+	if !strings.Contains(got, runtime.Version()) {
+		t.Errorf("versionInfo() = %q, want to contain runtime version %q", got, runtime.Version())
+	}
+}
+
+func TestToolchainWarning(t *testing.T) {
+	t.Parallel()
+
+	built := runtime.Version() // e.g. "go1.24.0"
+
+	tests := []struct {
+		name          string
+		hostGoVersion string
+		wantWarning   bool
+	}{
+		{
+			name:          "matching versions",
+			hostGoVersion: built,
+			wantWarning:   false,
+		},
+		{
+			name:          "empty host version",
+			hostGoVersion: "",
+			wantWarning:   false,
+		},
+		{
+			name:          "newer host toolchain",
+			hostGoVersion: "go99.0.0",
+			wantWarning:   true,
+		},
+		{
+			name:          "older host toolchain",
+			hostGoVersion: "go1.0.0",
+			wantWarning:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := toolchainWarning(tt.hostGoVersion)
+			hasWarning := got != ""
+
+			if hasWarning != tt.wantWarning {
+				t.Errorf("toolchainWarning(%q) returned warning=%v, want warning=%v (output: %q)",
+					tt.hostGoVersion, hasWarning, tt.wantWarning, got)
+			}
+			if tt.wantWarning {
+				if !strings.Contains(got, built) {
+					t.Errorf("toolchainWarning(%q) = %q, want to contain built version %q",
+						tt.hostGoVersion, got, built)
+				}
+				if !strings.Contains(got, tt.hostGoVersion) {
+					t.Errorf("toolchainWarning(%q) = %q, want to contain host version",
+						tt.hostGoVersion, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRun_Version(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := run([]string{"--version"}, &buf); err != nil {
+		t.Fatalf("run(--version) error = %v, want nil", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "trawl") {
+		t.Errorf("run(--version) output = %q, want to contain %q", got, "trawl")
+	}
+	if !strings.Contains(got, runtime.Version()) {
+		t.Errorf("run(--version) output = %q, want to contain Go version %q", got, runtime.Version())
+	}
+}
+
+func TestRun_Help(t *testing.T) {
+	t.Parallel()
+
+	// --help must exit cleanly (no error) even though it prints to stderr.
+	if err := run([]string{"--help"}, &bytes.Buffer{}); err != nil {
+		t.Errorf("run(--help) error = %v, want nil", err)
+	}
+}
 
 func TestDeduplicateCalls(t *testing.T) {
 	t.Parallel()
