@@ -55,7 +55,7 @@ jobs:
           cache: true
 
       - name: Validate .goreleaser.yaml
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: latest
           args: check
@@ -63,7 +63,7 @@ jobs:
       - name: Snapshot build (current platform)
         # Builds only the binary for the runner's OS/arch to catch compile errors
         # without the cost of full cross-compilation on every PR.
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: latest
           args: build --snapshot --single-target --clean
