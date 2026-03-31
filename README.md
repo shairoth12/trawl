@@ -4,35 +4,27 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/shairoth12/trawl)](https://go.dev/doc/install)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-trawl is a Go static analysis CLI that walks the call graph of a Go package and
-reports every external service call reachable from a given entry point function.
-Given a package pattern and a function name, trawl loads the package into SSA
-form, constructs a full call graph (using VTA or RTA), and performs a
-depth-first traversal from the entry point — stopping at module boundaries and
-matching package import paths against a built-in set of service indicators
-(HTTP, gRPC, Redis, Postgres, Vault, and more) as well as any user-supplied
-indicators from a YAML config file. Results are written to stdout as JSON,
-making trawl suitable for automation pipelines and LLM-based tooling.
+Static analysis CLI for Go. Walks the call graph from an entry-point function and reports every external service call reachable from it. Output is JSON.
+
+```
+  Source code ──► SSA IR ──► Call graph (VTA/RTA/CHA) ──► DFS walk ──► JSON
+```
+
+trawl detects calls to HTTP, gRPC, Redis, Postgres, Pub/Sub, Vault, and [10+ other services](#built-in-indicators) out of the box. Custom service types are declared via a YAML config file. Designed for automation pipelines and LLM-based tooling.
 
 ## Prerequisites
 
 - Go 1.24 or later
-- The target package must be loadable by `go/packages` (i.e. it must compile
-  and its dependencies must be present in the module cache or vendor directory)
-- The Go version used to build trawl must be greater than or equal to the Go
-  version required by the target module. If you see a "toolchain version
-  mismatch" error, rebuild trawl with the current toolchain:
-  `go build -o trawl ./cmd/trawl`
+- Target package must be loadable by `go/packages` (must compile, dependencies available)
+- The Go version used to build trawl must be >= the Go version required by the target module
 
 ## Installation
-
-Install the latest release directly from source:
 
 ```bash
 go install github.com/shairoth12/trawl/cmd/trawl@latest
 ```
 
-To build from source after cloning the repository:
+Or build from source:
 
 ```bash
 git clone https://github.com/shairoth12/trawl.git
@@ -40,16 +32,11 @@ cd trawl
 go build -o trawl ./cmd/trawl
 ```
 
-## Quick start
-
-Analyze the `HandleRequest` function in the package at `./cmd/server` using the
-default VTA call graph algorithm:
+## Quick Start
 
 ```bash
 trawl --pkg ./cmd/server --entry HandleRequest
 ```
-
-Sample output:
 
 ```json
 {
@@ -68,11 +55,7 @@ Sample output:
         "github.com/example/myapp/internal/client.(*HTTPClient).Fetch",
         "(*net/http.Client).Do"
       ],
-      "short_call_chain": [
-        "HandleRequest",
-        "(*HTTPClient).Fetch",
-        "(*Client).Do"
-      ],
+      "short_call_chain": ["HandleRequest", "(*HTTPClient).Fetch", "(*Client).Do"],
       "resolved_via": "direct",
       "confidence": "high"
     },
@@ -88,11 +71,7 @@ Sample output:
         "github.com/example/myapp/internal/cache.(*Store).Lookup",
         "(*github.com/redis/go-redis/v9.Client).Get"
       ],
-      "short_call_chain": [
-        "HandleRequest",
-        "(*Store).Lookup",
-        "(*Client).Get"
-      ],
+      "short_call_chain": ["HandleRequest", "(*Store).Lookup", "(*Client).Get"],
       "resolved_via": "direct",
       "confidence": "high"
     }
@@ -103,112 +82,132 @@ Sample output:
 ## Usage
 
 ```
-trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>] [--dedup]
+trawl --pkg <pattern> --entry <name> [flags]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--pkg` | `.` | Go package load pattern (e.g. `.`, `./cmd/server`, `github.com/foo/bar`) |
-| `--entry` | _(required)_ | Entry point function name. Accepts `FunctionName`, `Type.Method`, or a bare method name when unambiguous |
-| `--config` | _(none)_ | Path to a YAML config file containing custom service indicators |
-| `--algo` | `vta` | Call graph algorithm: `vta` (Variable Type Analysis, default), `rta` (Rapid Type Analysis), or `cha` (Class Hierarchy Analysis) |
-| `--scope` | _(none)_ | Extra package patterns for type visibility (comma-separated, e.g. `"./cmd/server"`, `"./..."`) |
-| `--dedup` | _(off)_ | Deduplicate results by `(service_type, import_path, function)`, keeping the shortest call chain per unique key; sets `deduplicated: true` in output |
-| `--timeout` | `10m` | Maximum duration for the analysis (e.g. `30s`, `5m`, `1h`); `0` disables the timeout |
+| `--pkg` | `.` | Go package load pattern (e.g. `.`, `./cmd/server`) |
+| `--entry` | _(required)_ | Entry point function name |
+| `--config` | _(none)_ | Path to YAML config file for custom service indicators |
+| `--algo` | `vta` | Call graph algorithm: `vta`, `rta`, or `cha` |
+| `--scope` | _(none)_ | Extra package patterns for type visibility (comma-separated) |
+| `--dedup` | _(off)_ | Deduplicate by `(service_type, import_path, function)`, shortest chain wins |
+| `--timeout` | `10m` | Maximum analysis duration; `0` disables |
+| `--version` | | Print version and exit |
 
-trawl responds to `SIGINT` and `SIGTERM` and will abort the analysis cleanly.
-Exit code is non-zero on any error; the error message is written to stderr.
+Responds to `SIGINT`/`SIGTERM` for clean abort. Exit code is non-zero on error.
 
-### Entry point formats
+### Entry Point Formats
 
 | Format | Example | Resolves to |
 |--------|---------|-------------|
-| Top-level function | `HandleRequest` | Package-level function with that name |
-| Qualified method | `Handler.ServeHTTP` | Method `ServeHTTP` on type `Handler` (value or pointer receiver) |
-| Bare method name | `ServeHTTP` | Unique method across all types in the package; error if ambiguous |
+| Top-level function | `HandleRequest` | Package-level function |
+| Qualified method | `Handler.ServeHTTP` | Method on type `Handler` (pointer or value receiver) |
+| Bare method name | `ServeHTTP` | Unique method across all types; error if ambiguous |
 
 ### Examples
 
 ```bash
-# Analyze a top-level function in the current module
+# Basic analysis
 trawl --pkg ./cmd/server --entry HandleRequest
 
-# Analyze a method on a named receiver type
+# Method on a named type
 trawl --pkg ./internal/handler --entry Handler.ServeHTTP
 
-# Use a config file with custom service indicators
+# Custom indicators
 trawl --pkg ./cmd/worker --entry ProcessJob --config trawl.yaml
 
-# Use RTA instead of VTA (faster; less precise for interface dispatch)
+# RTA (faster, less precise for interfaces)
 trawl --pkg ./cmd/server --entry HandleRequest --algo rta
 
-# Analyze a package by full import path
-trawl --pkg github.com/example/myapp/cmd/server --entry HandleRequest
-
-# Pipe the output into jq to extract service types
-trawl --pkg ./cmd/server --entry HandleRequest | jq '[.external_calls[].service_type] | unique'
-
-# Analyze a leaf package with injected interfaces (manual DI)
-trawl --pkg ./internal/handler --entry Handle --scope ./cmd/server
-
-# Analyze with CHA for reflection-based DI (dig, fx)
+# CHA for reflection-based DI (dig, fx, wire)
 trawl --pkg ./internal/handler --entry Handle --scope ./... --algo cha
 
-# Load the entire module for full type visibility
-trawl --pkg ./internal/handler --entry Handle --scope ./...
+# VTA with scope for manual constructor DI
+trawl --pkg ./internal/handler --entry Handle --scope ./cmd/server
 
-# Deduplicate output — one entry per (service_type, import_path, function), shortest chain wins
+# Deduplicate and count
 trawl --pkg ./cmd/server --entry HandleRequest --dedup | jq '.external_calls | length'
+
+# Extract unique service types
+trawl --pkg ./cmd/server --entry HandleRequest | jq '[.external_calls[].service_type] | unique'
 ```
 
-## Configuration file
+## How It Works
 
-The config file is optional YAML. It lets you declare additional package import
-path prefixes that should be treated as a named service type. User-supplied
-indicators take precedence over built-in ones; the first matching prefix wins.
+```
+Stage 1: go/packages.Load()
+         Load target package (+ scope packages) into typed AST
+              │
+Stage 2: ssautil.Packages() + prog.Build()
+         Convert to SSA intermediate representation
+              │
+Stage 3: Construct call graph
+         ├─ VTA: CHA seed → vta.CallGraph (default, most precise)
+         ├─ RTA: deferred to after entry resolution
+         └─ CHA: cha.CallGraph (broadest, handles reflection DI)
+              │
+Stage 4: Resolve entry point
+         "FuncName" | "Type.Method" | "BareMethod" → *ssa.Function
+              │
+Stage 5: DFS Walker
+         For each callee edge from current node:
+         ┌─ Detector match? → emit ExternalCall (direct, high)
+         ├─ Mock type? → infer from imports or skip
+         ├─ Ubiquitous interface? (error, io.Reader) → skip
+         ├─ Outside module? → infer from transitive imports or stop
+         └─ Inside module? → recurse
+              │
+Stage 6: Post-process
+         ├─ Relativize file paths
+         ├─ Deduplicate (--dedup)
+         └─ Populate short_function / short_call_chain
+              │
+Stage 7: JSON → stdout
+```
+
+## Call Graph Algorithms
+
+| Algorithm | Precision | Speed | Interface Resolution | Handles Reflection DI |
+|-----------|-----------|-------|---------------------|-----------------------|
+| **VTA** (default) | High | Slower | By observed value flow | No |
+| **RTA** | Medium | Faster | By instantiated types | No |
+| **CHA** | Low (with filters) | Fastest | By structural type match | Yes |
+
+**Use VTA** when concrete types are wired through visible constructors.
+**Use CHA + `--scope ./...`** when using reflection-based DI (dig, fx, wire).
+
+See [docs/ALGORITHMS.md](docs/ALGORITHMS.md) for the full decision guide.
+
+## Configuration File
+
+Optional YAML. Declares custom service indicators and wrapper libraries.
 
 ```yaml
 indicators:
-  # Override the built-in POSTGRES label for database/sql with a custom one.
+  # Override a built-in
   - package: "database/sql"
     service_type: "MYSQL"
 
-  # Classify an internal wrapper library as a known service type.
-  - package: "github.com/your-org/infra/pubsub"
-    service_type: "PUBSUB"
-
-  # Introduce a completely custom service type label.
+  # Custom service type
   - package: "github.com/your-org/bolt-client"
     service_type: "BOLT"
 
-  # Declare that a wrapper package and the library it wraps are both Redis.
-  # Calls through either import path receive resolved_via: "direct", confidence: "high".
+  # Wrapper library: both paths classified as REDIS, direct/high confidence
   - package: "github.com/your-org/rediscache"
     service_type: "REDIS"
     wrapper_for:
       - "github.com/custom-redis/client"
 ```
 
-Each entry has the following fields:
+User indicators take precedence over built-ins. First matching prefix wins.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `package` | string | Import path prefix to match (prefix match, not exact) |
-| `service_type` | string | Label assigned to calls whose import path starts with `package` |
-| `wrapper_for` | list of strings | Additional import path prefixes that should be classified under the same `service_type`. Entries are expanded into separate indicators at load time, so each matched path receives `resolved_via: "direct"` and `confidence: "high"`. Optional. |
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 
-Pass the file to trawl with:
+### Built-in Indicators
 
-```bash
-trawl --pkg ./cmd/server --entry HandleRequest --config trawl.yaml
-```
-
-### Built-in indicators
-
-The following indicators are active by default when no config is provided (or in
-addition to config indicators, with lower precedence):
-
-| Service type | Matched import path prefixes |
+| Service Type | Matched Import Path Prefixes |
 |--------------|------------------------------|
 | `HTTP` | `net/http` |
 | `GRPC` | `google.golang.org/grpc` |
@@ -221,136 +220,43 @@ addition to config indicators, with lower precedence):
 | `VAULT` | `github.com/hashicorp/vault/api` |
 | `ETCD` | `go.etcd.io/etcd/client` |
 
-## How it works
+## Output Format
 
-```
-  go/packages ──► go/ssa (SSA IR) ──► CHA seed ──► VTA call graph (--algo vta)
-                                              or: CHA only (--algo cha)
-                                              or: RTA (built from entry point)
-                                                        │
-                                             Resolve entry *ssa.Function
-                                          (top-level / Type.Method / bare)
-                                                        │
-                                                        ▼
-                                         ┌──────────────────────────────┐
-                                         │          DFS Walker          │
-                                         │  for each callee:            │
-                                         │  1. indicator match?  ───────┼──► record ExternalCall
-                                         │  2. out-of-module?    ───────┼──► stop
-                                         │  3. already visited?  ───────┼──► stop
-                                         │  4. recurse                  │
-                                         └──────────────────────────────┘
-                                                        │
-                                                        ▼
-                                                 JSON ──► stdout
-```
+Single JSON object to stdout. The `external_calls` array is never null.
 
-Indicator matching uses prefix comparison against the merged list (user config
-first, then built-in). The detector runs before the module-boundary check so
-calls into third-party packages are always captured, never silently skipped.
+Each call includes:
+- `service_type`, `import_path`, `function`, `file`, `line`
+- `call_chain` — ordered path from entry to call site
+- `resolved_via` — `"direct"`, `"mock_inference"`, or `"cross_module_inference"`
+- `confidence` — `"high"`, `"medium"`, or `"low"`
+- `short_function`, `short_call_chain` — paths and generics stripped
 
-## Dependency injection
+See [docs/OUTPUT-FORMAT.md](docs/OUTPUT-FORMAT.md) for the full schema reference.
 
-When analyzing leaf packages whose interfaces are implemented in separate
-packages (e.g., constructor injection, DI containers), `--scope` loads
-additional packages into the SSA program to enrich the type universe.
+## Dependency Injection
 
-### Manual DI (constructor injection)
-
-For code that manually wires concrete types via constructors (`NewServer(NewStore())`),
-VTA traces value flow through constructors. Use `--scope` to ensure the
-wiring package is loaded:
+When analyzing leaf packages whose interfaces are implemented elsewhere:
 
 ```bash
+# Manual DI (constructor injection) — VTA traces value flow
 trawl --pkg ./internal/handler --entry Handle --scope ./cmd/server --algo vta
-```
 
-### Reflection-based DI (dig, fx, wire)
-
-For frameworks that wire types via reflection (`dig.Container.Provide`),
-VTA cannot trace through `reflect.Call`. Use CHA instead, which resolves
-interface dispatch purely by structural type matching:
-
-```bash
+# Reflection-based DI (dig, fx) — CHA resolves by type structure
 trawl --pkg ./internal/handler --entry Handle --scope ./... --algo cha
 ```
 
-CHA over-approximates: it reports any type structurally satisfying an interface,
-even if never wired at runtime. VTA is more precise but requires visible value
-flow. The default remains VTA for backward compatibility.
+## Documentation
 
-## Output format
-
-trawl writes a single JSON object to stdout. The object always contains the
-three top-level keys below, even when no external calls are found.
-
-```json
-{
-  "entry_point": "string",
-  "package":     "string",
-  "external_calls": [ ... ]
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `entry_point` | string | Fully-qualified SSA name of the resolved entry point function |
-| `package` | string | Import path of the directly-analyzed package |
-| `external_calls` | array | Ordered list of detected external service calls (may be empty, never null) |
-| `deduplicated` | boolean | Present and `true` only when `--dedup` was passed; indicates the list has been deduplicated |
-
-Each element of `external_calls`:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `service_type` | string | Matched service label (e.g. `"HTTP"`, `"REDIS"`, or a custom label) |
-| `import_path` | string | Full Go import path of the package where the call was detected |
-| `function` | string | Fully-qualified function or method name (includes import path prefix). For calls resolved through interface dispatch on a mock type, this is the interface method label (`InterfaceType.MethodName`) rather than the concrete mock type name. |
-| `short_function` | string | `function` with module path prefixes and generic type parameters stripped (e.g. `"(*github.com/foo/bar.Client).Do"` → `"(*Client).Do"`). Always present. |
-| `file` | string | Path to the source file containing the call site, relative to the working directory |
-| `line` | integer | Line number of the call site; `0` for synthetic call graph edges |
-| `call_chain` | array of strings | Ordered sequence of fully-qualified function names from the entry point to the detected call. Interface dispatch entries through mock types use the interface method label. |
-| `short_call_chain` | array of strings | `call_chain` with the same stripping applied to each entry. Suitable for display in LLM prompts or human-readable reports. Always present. |
-| `resolved_via` | string | How the call was discovered. See table below. |
-| `confidence` | string | Reliability of the detection. See table below. |
-
-#### `resolved_via` values
-
-| Value | Meaning |
-|-------|---------|
-| `direct` | Import path matched an indicator directly (or via a `wrapper_for` entry). Highest reliability. |
-| `mock_inference` | Call site is on a mock type; service type was inferred from the mock's package imports. |
-| `cross_module_inference` | Service type was inferred from 2-level transitive imports of an external-module package. Lower reliability; verify manually. |
-
-#### `confidence` values
-
-| Value | Meaning |
-|-------|---------|
-| `high` | Direct indicator match. |
-| `medium` | Mock inference — likely correct but depends on import conventions. |
-| `low` | Cross-module transitive inference — treat as a hint, verify manually. |
-
-### Name shortening
-
-`short_function` and `short_call_chain` are produced by the exported
-`ShortenName(s string) string` function. It applies two transformations in
-order:
-
-1. Strip generic type parameter blocks — any `[...]` segment (including nested
-   brackets) is removed. `"Cache[K, V].Set"` becomes `"Cache.Set"`.
-2. Strip the import path prefix — the last `/`-separated component is found and
-   then the package qualifier (everything up to and including the first `.`) is
-   removed. `"github.com/foo/bar.Get"` becomes `"Get"`.
-
-Pointer-receiver prefixes (`(*`) are preserved throughout. Examples:
-
-| Raw `function` value | `short_function` |
-|----------------------|-----------------|
-| `"github.com/foo/bar.Get"` | `"Get"` |
-| `"(*github.com/foo/bar.Client).Do"` | `"(*Client).Do"` |
-| `"github.com/foo/bar.Cache[T].Set"` | `"Cache.Set"` |
-| `"(*github.com/foo/bar.Cache[K, V]).Get"` | `"(*Cache).Get"` |
+| Document | Description |
+|----------|-------------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System overview, pipeline, package map, design decisions |
+| [docs/INTERNALS.md](docs/INTERNALS.md) | Deep dive into each internal package's API and logic |
+| [docs/ALGORITHMS.md](docs/ALGORITHMS.md) | VTA vs RTA vs CHA decision guide |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Config file format, indicator system, examples |
+| [docs/OUTPUT-FORMAT.md](docs/OUTPUT-FORMAT.md) | JSON output schema reference |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, commit conventions, PR workflow |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ## License
 
-MIT — see LICENSE
+MIT — see [LICENSE](LICENSE)
