@@ -1,5 +1,9 @@
 # trawl
 
+[![Latest Release](https://img.shields.io/github/v/release/shairoth12/trawl)](https://github.com/shairoth12/trawl/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/shairoth12/trawl)](https://go.dev/doc/install)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 trawl is a Go static analysis CLI that walks the call graph of a Go package and
 reports every external service call reachable from a given entry point function.
 Given a package pattern and a function name, trawl loads the package into SSA
