@@ -10,11 +10,11 @@ Static analysis CLI for Go. Walks the call graph from an entry-point function an
   Source code ──► SSA IR ──► Call graph (VTA/RTA/CHA) ──► DFS walk ──► JSON
 ```
 
-trawl detects calls to HTTP, gRPC, Redis, Postgres, Pub/Sub, Vault, and [10+ other services](#built-in-indicators) out of the box. Custom service types are declared via a YAML config file. Designed for automation pipelines and LLM-based tooling.
+trawl detects calls to [10 built-in service types](#built-in-indicators) — HTTP, gRPC, Redis, Postgres, Pub/Sub, Vault, and more — out of the box. Custom service types are declared via a YAML config file. Designed for automation pipelines and LLM-based tooling.
 
 ## Prerequisites
 
-- Go 1.24 or later
+- Go 1.25 or later
 - Target package must be loadable by `go/packages` (must compile, dependencies available)
 - The Go version used to build trawl must be >= the Go version required by the target module
 

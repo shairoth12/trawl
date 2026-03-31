@@ -16,7 +16,7 @@ indicators:
       - "another/wrapped/prefix"
 ```
 
-**Top-level key**: `indicators` (required, list)
+**Top-level key**: `indicators` (optional, list — omit or leave empty to use only built-in indicators)
 
 ## Indicator Fields
 
