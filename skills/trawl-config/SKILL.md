@@ -8,7 +8,7 @@ description: >
   indicators", "trawl misses calls through our wrappers", or when preparing to run
   trawl on a codebase that uses internal client libraries, SDK wrappers, or custom
   service abstractions. Run this skill first, then run the trawl skill.
-compatibility: Requires Go codebase with go.mod. No trawl installation needed for this step.
+compatibility: Requires Go codebase with go.mod. Steps 1–6 require only the Go source tree. Step 7 (verification) optionally requires trawl installed.
 metadata:
   author: shairoth12
   version: 1.0.0
@@ -196,11 +196,11 @@ Save as `trawl.yaml` at the root of the repository (or wherever trawl will be ru
 
 ## Step 7: Verify
 
-Run a quick sanity check before handing off to the trawl skill:
+Optionally verify the config loads without errors before handing off to the trawl skill.
+Use a real package and entry point from the codebase (the one you plan to analyze):
 
 ```bash
-# Confirm trawl loads the config without errors
-trawl --pkg . --entry main --config trawl.yaml 2>&1 | head -5
+trawl --pkg <pkg> --entry <EntryPoint> --config trawl.yaml 2>&1 | head -5
 ```
 
 A config validation error looks like:
@@ -208,7 +208,9 @@ A config validation error looks like:
 trawl: loading config: indicator 0: package must not be empty
 ```
 
-Fix any reported issues, then proceed with the trawl skill.
+An entry point error (`resolving entry point: ...`) means the `--pkg`/`--entry` pair is
+wrong — not the config. Fix any config errors reported before the entry resolution stage,
+then proceed with the trawl skill.
 
 ---
 

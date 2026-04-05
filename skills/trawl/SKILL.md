@@ -64,13 +64,13 @@ trawl needs a specific function to start from. Good candidates:
 
 ```bash
 # HTTP handlers
-grep -rn "func.*Handler\|func.*ServeHTTP\|func.*Handle\b" --include="*.go" .
+grep -rn "func.*Handler\|func.*ServeHTTP\|func.*Handle(" --include="*.go" .
 
 # gRPC server methods
 grep -rn "func.*Server).*ctx context.Context" --include="*.go" .
 
 # Worker / job entry points
-grep -rn "func.*Process\|func.*Worker\|func.*Run\b\|func.*Execute\b" --include="*.go" .
+grep -rn "func.*Process\|func.*Worker\|func.*Run(\|func.*Execute(" --include="*.go" .
 
 # Temporal / queue activities
 grep -rn "func.*Activity\|func.*Workflow" --include="*.go" .
