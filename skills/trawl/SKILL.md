@@ -201,8 +201,19 @@ Before reporting "no external calls found," check:
 
 ## Step 7: Custom service indicators
 
-If the codebase uses internal wrapper libraries around Redis, HTTP, Kafka, etc., trawl
-won't recognize them by default. Create a `trawl.yaml` config:
+First, check if a config file already exists:
+
+```bash
+ls trawl.yaml 2>/dev/null && echo "found" || echo "not found"
+```
+
+If found, pass it with `--config trawl.yaml` and skip the rest of this step.
+
+If not found and the codebase uses internal wrapper libraries that trawl won't recognize
+by default, use the `trawl-config` skill to generate one — it will read the codebase
+and identify wrappers automatically. Then pass it here with `--config trawl.yaml`.
+
+Otherwise, create `trawl.yaml` manually:
 
 ```yaml
 indicators:
