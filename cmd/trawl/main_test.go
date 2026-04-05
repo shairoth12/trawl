@@ -25,7 +25,7 @@ func TestVersionInfo(t *testing.T) {
 func TestToolchainWarning(t *testing.T) {
 	t.Parallel()
 
-	built := runtime.Version() // e.g. "go1.24.0"
+	built := runtime.Version() // e.g. "go1.25.0"
 
 	tests := []struct {
 		name          string

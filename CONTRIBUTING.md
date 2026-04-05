@@ -2,7 +2,7 @@
 
 ## Development setup
 
-Requirements: Go 1.24+
+Requirements: Go 1.25+
 
 ```bash
 git clone https://github.com/shairoth12/trawl
