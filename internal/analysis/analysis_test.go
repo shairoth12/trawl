@@ -29,7 +29,7 @@ func brokenModuleDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 
-	gomod := "module example.com/broken\n\ngo 1.24\n"
+	gomod := "module example.com/broken\n\ngo 1.25\n"
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
 		t.Fatalf("WriteFile(go.mod): %v", err)
 	}
