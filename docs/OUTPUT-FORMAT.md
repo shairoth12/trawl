@@ -48,13 +48,14 @@ call_graph_nodes  │ integer │ Total functions (nodes) in the constructed cal
 call_graph_edges  │ integer │ Total call sites (edges) across all nodes in the call graph
 nodes_visited     │ integer │ Unique call graph nodes entered during the DFS walk
 edges_examined    │ integer │ Total outgoing edges considered during DFS (including skipped)
-load_duration_ms  │ integer │ Wall-clock milliseconds spent in Stage 1–3 (package load + SSA + call graph)
-walk_duration_ms  │ integer │ Wall-clock milliseconds spent in Stage 5 (DFS walk); typically 0 for most analyses
+load_duration_ms  │ integer │ Wall-clock milliseconds from package load start through call graph construction (all algorithms)
+walk_duration_ms  │ integer │ Wall-clock milliseconds spent in the DFS walk; typically 0 for most analyses
 ```
 
 **Interpreting stats:**
 
 - `packages_loaded` and `load_duration_ms` are the primary indicators of analysis cost. Load time scales with package count, not call graph size.
+- `load_duration_ms` is consistent across all algorithms: it covers package load + SSA build + call graph construction. For VTA/CHA the call graph is built inside `analysis.Load`; for RTA it is built by `rta.Analyze` immediately after, so both phases are included in the timer.
 - `nodes_visited / call_graph_nodes` shows coverage: for a deep entry point this ratio approaches 1; for a shallow handler it is typically < 1%.
 - `walk_duration_ms` reports 0 for most analyses because the DFS completes in sub-millisecond time. This is expected and correct.
 - `call_graph_edges` counts all edges in the full graph (constructed once). `edges_examined` counts only edges actually traversed from the given entry point.

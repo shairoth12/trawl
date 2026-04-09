@@ -259,7 +259,7 @@ When `--stats` is passed, a `stats` object is appended with diagnostic measureme
 }
 ```
 
-`packages_loaded` and `load_duration_ms` are the primary signals for slow analyses. `nodes_visited` vs `call_graph_nodes` shows what fraction of the graph the DFS actually traversed. `walk_duration_ms` is sub-millisecond for most analyses (reported as `0`).
+`packages_loaded` and `load_duration_ms` are the primary signals for slow analyses. `load_duration_ms` covers package load + SSA + call graph construction for all algorithms (including RTA). `nodes_visited` vs `call_graph_nodes` shows what fraction of the graph the DFS actually traversed. `walk_duration_ms` is sub-millisecond for most analyses (reported as `0`).
 
 Each call includes:
 - `service_type`, `import_path`, `function`, `file`, `line`

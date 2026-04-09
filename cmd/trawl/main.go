@@ -182,8 +182,7 @@ func run(args []string, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("loading package %q: %w", *pkg, err)
 	}
-	loadDuration := time.Since(t0)
-	log.Info("packages_loaded", "pkg", *pkg, "elapsed", loadDuration.String())
+	log.Info("packages_loaded", "pkg", *pkg, "elapsed", time.Since(t0).String())
 
 	log.Info("resolving_entry", "entry", *entry)
 	fn, err := analysis.Resolve(loadResult, *entry)
@@ -197,6 +196,11 @@ func run(args []string, stdout io.Writer) error {
 		rtaResult := rta.Analyze([]*ssa.Function{fn}, true)
 		graph = rtaResult.CallGraph
 	}
+	// loadDuration covers package load + SSA build + call graph construction for
+	// all algorithms. For VTA/CHA the call graph is built inside analysis.Load;
+	// for RTA it is built by rta.Analyze above, so the timer stops here after
+	// both phases complete.
+	loadDuration := time.Since(t0)
 
 	det := detector.New(cfg.Indicators)
 	w := walker.New(graph, det, loadResult.Module, loadResult.Prog.Fset, log)

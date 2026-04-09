@@ -91,7 +91,7 @@ Entry point formats trawl accepts:
 trawl --pkg <pattern> --entry <name> [--algo vta|rta|cha] [--scope <patterns>] [--dedup] [--stats] [--config trawl.yaml] [--log-level off|info|debug] [--log-file <path>] [--log-format text|json]
 ```
 
-**`--stats`** appends a `stats` object to the JSON output with package count, call graph size, DFS traversal counters, and phase durations. Use it when a run is unexpectedly slow or you need to understand analysis scope. `load_duration_ms` is the primary cost signal; `walk_duration_ms` is typically `0` (sub-millisecond). The `stats` key is absent when the flag is not passed.
+**`--stats`** appends a `stats` object to the JSON output with package count, call graph size, DFS traversal counters, and phase durations. Use it when a run is unexpectedly slow or you need to understand analysis scope. `load_duration_ms` covers package load + SSA + call graph construction for all algorithms (including RTA); `walk_duration_ms` is typically `0` (sub-millisecond). The `stats` key is absent when the flag is not passed.
 
 **Logging flags** (trawl logs INFO-level stage progress to stderr by default):
 
