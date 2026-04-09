@@ -93,6 +93,7 @@ trawl --pkg <pattern> --entry <name> [flags]
 | `--algo` | `vta` | Call graph algorithm: `vta`, `rta`, or `cha` |
 | `--scope` | _(none)_ | Extra package patterns for type visibility (comma-separated) |
 | `--dedup` | _(off)_ | Deduplicate by `(service_type, import_path, function)`, shortest chain wins |
+| `--stats` | _(off)_ | Append analysis diagnostics to JSON output (package count, call graph size, DFS counters, phase durations) |
 | `--timeout` | `10m` | Maximum analysis duration; `0` disables |
 | `--log-level` | `info` | Log verbosity: `off`, `error`, `warn`, `info`, or `debug` |
 | `--log-file` | _(stderr)_ | Write logs to a file instead of stderr |
@@ -134,6 +135,9 @@ trawl --pkg ./internal/handler --entry Handle --scope ./cmd/server
 
 # Deduplicate and count
 trawl --pkg ./cmd/server --entry HandleRequest --dedup | jq '.external_calls | length'
+
+# Diagnose slow analysis (packages loaded, call graph size, phase timing)
+trawl --pkg ./cmd/server --entry HandleRequest --stats --log-level off | jq .stats
 
 # Extract unique service types
 trawl --pkg ./cmd/server --entry HandleRequest | jq '[.external_calls[].service_type] | unique'
@@ -240,6 +244,22 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 ## Output Format
 
 Single JSON object to stdout. The `external_calls` array is never null.
+
+When `--stats` is passed, a `stats` object is appended with diagnostic measurements for the run:
+
+```json
+"stats": {
+  "packages_loaded": 1911,
+  "call_graph_nodes": 64320,
+  "call_graph_edges": 26548,
+  "nodes_visited": 60,
+  "edges_examined": 430,
+  "load_duration_ms": 2177,
+  "walk_duration_ms": 0
+}
+```
+
+`packages_loaded` and `load_duration_ms` are the primary signals for slow analyses. `nodes_visited` vs `call_graph_nodes` shows what fraction of the graph the DFS actually traversed. `walk_duration_ms` is sub-millisecond for most analyses (reported as `0`).
 
 Each call includes:
 - `service_type`, `import_path`, `function`, `file`, `line`

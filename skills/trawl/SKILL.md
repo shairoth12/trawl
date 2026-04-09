@@ -88,8 +88,10 @@ Entry point formats trawl accepts:
 ## Step 2: Construct the command
 
 ```bash
-trawl --pkg <pattern> --entry <name> [--algo vta|rta|cha] [--scope <patterns>] [--dedup] [--config trawl.yaml] [--log-level off|info|debug] [--log-file <path>] [--log-format text|json]
+trawl --pkg <pattern> --entry <name> [--algo vta|rta|cha] [--scope <patterns>] [--dedup] [--stats] [--config trawl.yaml] [--log-level off|info|debug] [--log-file <path>] [--log-format text|json]
 ```
+
+**`--stats`** appends a `stats` object to the JSON output with package count, call graph size, DFS traversal counters, and phase durations. Use it when a run is unexpectedly slow or you need to understand analysis scope. `load_duration_ms` is the primary cost signal; `walk_duration_ms` is typically `0` (sub-millisecond). The `stats` key is absent when the flag is not passed.
 
 **Logging flags** (trawl logs INFO-level stage progress to stderr by default):
 
@@ -311,4 +313,7 @@ trawl ... | jq '[.external_calls[]] | group_by(.service_type) | map({type: .[0].
 
 # Unique service types reached (use --dedup for this — inventory mode, not mock setup)
 trawl ... --dedup | jq '[.external_calls[].service_type] | unique'
+
+# Diagnose slow analysis (package count + load time)
+trawl ... --stats --log-level off | jq '.stats | {packages_loaded, load_duration_ms}'
 ```
