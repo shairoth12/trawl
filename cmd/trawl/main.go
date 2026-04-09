@@ -124,8 +124,14 @@ func run(args []string, stdout io.Writer) error {
 		return err
 	}
 
+	log, logCleanup, err := buildLogger(*logLevel, *logFormat, *logFile)
+	if err != nil {
+		return err
+	}
+	defer logCleanup()
+
 	if warn := toolchainWarning(activeGoVersion()); warn != "" {
-		_, _ = fmt.Fprintln(os.Stderr, warn)
+		log.Warn(warn)
 	}
 
 	if *entry == "" {
@@ -147,12 +153,6 @@ func run(args []string, stdout io.Writer) error {
 			defer cancel()
 		}
 	}
-
-	log, logCleanup, err := buildLogger(*logLevel, *logFormat, *logFile)
-	if err != nil {
-		return err
-	}
-	defer logCleanup()
 
 	cfg, err := trawl.LoadConfig(ctx, *configPath)
 	if err != nil {
