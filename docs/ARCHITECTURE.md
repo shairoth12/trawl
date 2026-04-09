@@ -26,7 +26,7 @@ trawl.yaml ──► LoadConfig() ──► Config
                                                   │
                                                   ▼
       graph + Detector ──► walker.New() ──► Walker
-              module       walker.Walk(fn) ──► []ExternalCall
+              module, log  walker.Walk(fn) ──► []ExternalCall
                                                     │
                                                     ▼
                                            relativize paths
@@ -46,8 +46,8 @@ The three `internal/` packages import `trawl` for shared types but do not import
 The analysis runs as a fixed 7-stage pipeline. Every invocation executes these stages in order:
 
 ```
-Stage 1: Parse CLI flags
-    │
+Stage 1: Parse CLI flags + build logger
+    │  --log-level, --log-file, --log-format → *slog.Logger → stderr or file
     ▼
 Stage 2: Load config (YAML → Config struct)
     │
@@ -64,7 +64,7 @@ Stage 5: Build RTA graph (only when --algo rta)
     │  rta.Analyze([]*ssa.Function{fn}, true) → graph
     ▼
 Stage 6: DFS Walk
-    │  walker.New(graph, detector, module, fset)
+    │  walker.New(graph, detector, module, fset, log)
     │  walker.Walk(entry) → []ExternalCall
     │
     │  For each edge in the call graph:
@@ -111,7 +111,7 @@ github.com/shairoth12/trawl/
 │   │
 ├── cmd/trawl/
 │   └── main.go           CLI entry point. Flag parsing, pipeline orchestration.
-│                         deduplicateCalls(), versionInfo(), toolchainWarning()
+│                         buildLogger(), deduplicateCalls(), versionInfo(), toolchainWarning()
 │
 ├── internal/
 │   ├── analysis/

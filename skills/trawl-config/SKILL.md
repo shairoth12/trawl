@@ -11,7 +11,7 @@ description: >
 compatibility: Requires Go codebase with go.mod. Steps 1–6 require only the Go source tree. Step 7 (verification) optionally requires trawl installed.
 metadata:
   author: shairoth12
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 > This skill produces a `trawl.yaml` config file. Once it exists, pass it to trawl
@@ -197,10 +197,10 @@ Save as `trawl.yaml` at the root of the repository (or wherever trawl will be ru
 ## Step 7: Verify
 
 Optionally verify the config loads without errors before handing off to the trawl skill.
-Use a real package and entry point from the codebase (the one you plan to analyze):
+Use `--log-level off` to suppress stage logs so only errors appear on stderr:
 
 ```bash
-trawl --pkg <pkg> --entry <EntryPoint> --config trawl.yaml 2>&1 | head -5
+trawl --pkg <pkg> --entry <EntryPoint> --config trawl.yaml --log-level off 2>&1 | head -5
 ```
 
 A config validation error looks like:
@@ -209,7 +209,7 @@ trawl: loading config: indicator 0: package must not be empty
 ```
 
 An entry point error (`resolving entry point: ...`) means the `--pkg`/`--entry` pair is
-wrong — not the config. Fix any config errors reported before the entry resolution stage,
+wrong — not the config. Fix any config errors before the entry resolution stage,
 then proceed with the trawl skill.
 
 ---

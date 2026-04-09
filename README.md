@@ -94,7 +94,12 @@ trawl --pkg <pattern> --entry <name> [flags]
 | `--scope` | _(none)_ | Extra package patterns for type visibility (comma-separated) |
 | `--dedup` | _(off)_ | Deduplicate by `(service_type, import_path, function)`, shortest chain wins |
 | `--timeout` | `10m` | Maximum analysis duration; `0` disables |
+| `--log-level` | `info` | Log verbosity: `off`, `error`, `warn`, `info`, or `debug` |
+| `--log-file` | _(stderr)_ | Write logs to a file instead of stderr |
+| `--log-format` | `text` | Log format: `text` or `json` |
 | `--version` | | Print version and exit |
+
+Stage-progress logs are written to stderr at `info` level by default. Use `--log-file` to redirect them so that stderr contains only true errors. Use `--log-level off` for stdout-only JSON output.
 
 Responds to `SIGINT`/`SIGTERM` for clean abort. Exit code is non-zero on error.
 
@@ -132,6 +137,18 @@ trawl --pkg ./cmd/server --entry HandleRequest --dedup | jq '.external_calls | l
 
 # Extract unique service types
 trawl --pkg ./cmd/server --entry HandleRequest | jq '[.external_calls[].service_type] | unique'
+
+# Suppress stage logs (stdout JSON only)
+trawl --pkg ./cmd/server --entry HandleRequest --log-level off
+
+# Write logs to a file, keep stderr clean for errors
+trawl --pkg ./cmd/server --entry HandleRequest --log-file trawl.log
+
+# Debug per-edge decisions
+trawl --pkg ./cmd/server --entry HandleRequest --log-level debug
+
+# JSON logs for machine consumption
+trawl --pkg ./cmd/server --entry HandleRequest --log-format json --log-file trawl.log
 ```
 
 ## How It Works

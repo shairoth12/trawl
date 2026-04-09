@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -107,6 +108,9 @@ func run(args []string, stdout io.Writer) error {
 	scope := fs.String("scope", "", "Extra package patterns for type visibility (comma-separated)")
 	dedupFlag := fs.Bool("dedup", false, "Deduplicate results by (service_type, import_path, function), keeping shortest call chain")
 	timeoutStr := fs.String("timeout", "10m", "Maximum duration for the analysis (e.g. 30s, 5m, 1h); 0 means no timeout")
+	logLevel := fs.String("log-level", "info", "Log verbosity: off, error, warn, info, or debug")
+	logFile := fs.String("log-file", "", "Write logs to this file instead of stderr")
+	logFormat := fs.String("log-format", "text", "Log format: text or json")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -120,8 +124,14 @@ func run(args []string, stdout io.Writer) error {
 		return err
 	}
 
+	log, logCleanup, err := buildLogger(*logLevel, *logFormat, *logFile)
+	if err != nil {
+		return err
+	}
+	defer logCleanup()
+
 	if warn := toolchainWarning(activeGoVersion()); warn != "" {
-		_, _ = fmt.Fprintln(os.Stderr, warn)
+		log.Warn(warn)
 	}
 
 	if *entry == "" {
@@ -163,15 +173,21 @@ func run(args []string, stdout io.Writer) error {
 			}
 		}
 	}
+
+	log.Info("loading_packages", "pkg", *pkg, "algo", *algoStr)
+	t0 := time.Now()
 	loadResult, err := analysis.Load(ctx, dir, *pkg, algo, scopePatterns...)
 	if err != nil {
 		return fmt.Errorf("loading package %q: %w", *pkg, err)
 	}
+	log.Info("packages_loaded", "pkg", *pkg, "elapsed", time.Since(t0).String())
 
+	log.Info("resolving_entry", "entry", *entry)
 	fn, err := analysis.Resolve(loadResult, *entry)
 	if err != nil {
 		return fmt.Errorf("resolving entry point %q: %w", *entry, err)
 	}
+	log.Info("entry_resolved", "entry", *entry, "fn", fn.String())
 
 	graph := loadResult.Graph
 	if algo == analysis.AlgoRTA {
@@ -180,11 +196,14 @@ func run(args []string, stdout io.Writer) error {
 	}
 
 	det := detector.New(cfg.Indicators)
-	w := walker.New(graph, det, loadResult.Module, loadResult.Prog.Fset)
+	w := walker.New(graph, det, loadResult.Module, loadResult.Prog.Fset, log)
+	log.Info("walking_graph", "entry", fn.String())
+	t1 := time.Now()
 	calls, err := w.Walk(fn)
 	if err != nil {
 		return fmt.Errorf("walking call graph: %w", err)
 	}
+	log.Info("walk_complete", "calls", len(calls), "elapsed", time.Since(t1).String())
 
 	// Strip the working-directory prefix from file paths so output contains
 	// relative paths rather than absolute filesystem paths.
@@ -222,6 +241,56 @@ func run(args []string, stdout io.Writer) error {
 		return fmt.Errorf("encoding output: %w", err)
 	}
 	return nil
+}
+
+// buildLogger constructs a *slog.Logger that writes to dst (or os.Stderr when
+// dst is empty). Level "off" produces a discard logger. The returned cleanup
+// func closes the log file when dst is non-empty; callers must defer it.
+func buildLogger(level, format, dst string) (*slog.Logger, func(), error) {
+	if strings.ToLower(level) == "off" {
+		return slog.New(slog.NewTextHandler(io.Discard, nil)), func() {}, nil
+	}
+
+	var lvl slog.Level
+	switch strings.ToLower(level) {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "info":
+		lvl = slog.LevelInfo
+	case "warn":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		return nil, nil, fmt.Errorf("invalid --log-level %q: must be off, error, warn, info, or debug", level)
+	}
+
+	switch strings.ToLower(format) {
+	case "json", "text", "":
+		// valid
+	default:
+		return nil, nil, fmt.Errorf("invalid --log-format %q: must be text or json", format)
+	}
+
+	out := io.Writer(os.Stderr)
+	cleanup := func() {}
+	if dst != "" {
+		f, err := os.Create(dst)
+		if err != nil {
+			return nil, nil, fmt.Errorf("opening log file %s: %w", dst, err)
+		}
+		out = f
+		cleanup = func() { _ = f.Close() }
+	}
+
+	opts := &slog.HandlerOptions{Level: lvl, AddSource: lvl == slog.LevelDebug}
+	var h slog.Handler
+	if strings.ToLower(format) == "json" {
+		h = slog.NewJSONHandler(out, opts)
+	} else {
+		h = slog.NewTextHandler(out, opts)
+	}
+	return slog.New(h), cleanup, nil
 }
 
 type dedupKey struct {
