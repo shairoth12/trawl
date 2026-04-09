@@ -16,9 +16,11 @@ linters:
       rules:
         - name: blank-imports
         - name: context-as-argument
+        - name: early-return
         - name: error-return
         - name: error-strings
         - name: exported
+        - name: indent-error-flow
 
 formatters:
   enable:

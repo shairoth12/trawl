@@ -45,7 +45,7 @@ func walkFixture(t *testing.T, pattern, entry string) []trawl.ExternalCall {
 		t.Fatalf("analysis.Resolve(%q): %v", entry, err)
 	}
 	det := detector.New(nil)
-	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset)
+	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
 	calls, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entry, err)
@@ -199,7 +199,7 @@ func TestWalk_EntryNotInGraph(t *testing.T) {
 	}
 
 	det := detector.New(nil)
-	w := walker.New(emptyResult.Graph, det, emptyResult.Module, emptyResult.Prog.Fset)
+	w := walker.New(emptyResult.Graph, det, emptyResult.Module, emptyResult.Prog.Fset, nil)
 	_, err = w.Walk(fn)
 	if err == nil {
 		t.Fatalf("Walk(fn from different graph) = nil error, want an error about entry not found")
@@ -229,7 +229,7 @@ func TestWalk_RTA(t *testing.T) {
 	graph := rtaResult.CallGraph
 
 	det := detector.New(nil)
-	w := walker.New(graph, det, result.Module, result.Prog.Fset)
+	w := walker.New(graph, det, result.Module, result.Prog.Fset, nil)
 	calls, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(HandleRequest, RTA): %v", err)
@@ -412,7 +412,7 @@ func walkFixtureCHA(t *testing.T, pattern, entry string, indicators []trawl.Indi
 		t.Fatalf("analysis.Resolve(%q): %v", entry, err)
 	}
 	det := detector.New(indicators)
-	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset)
+	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
 	calls, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entry, err)

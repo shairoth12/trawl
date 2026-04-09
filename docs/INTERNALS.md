@@ -132,9 +132,10 @@ All builtins have `SkipInternal: true`.
 **Files**: `walker.go`, `export_test.go`
 **Purpose**: DFS traversal of an SSA call graph. Detects external service calls reachable from an entry point.
 
-### `New(graph, detector, module, fset) *Walker`
+### `New(graph, detector, module, fset, log) *Walker`
 
-Creates a walker. Not safe for concurrent use.
+Creates a walker. Not safe for concurrent use. Pass `nil` for `log` to disable
+debug logging (used in tests); otherwise pass the `*slog.Logger` from the CLI.
 
 ### `Walk(entry) ([]ExternalCall, error)`
 
@@ -283,6 +284,16 @@ Checks every Indicator:
 
 **File**: `main.go`
 **Purpose**: CLI orchestration. See [ARCHITECTURE.md](ARCHITECTURE.md) § Pipeline.
+
+### `buildLogger(level, format, dst) (*slog.Logger, func(), error)`
+
+Constructs the logger for the pipeline. Level `"off"` routes to `io.Discard`.
+Otherwise opens `dst` as a file (or uses `os.Stderr` when empty) and returns a
+`TextHandler` or `JSONHandler` keyed to `format`. The returned cleanup func
+closes the file; callers must defer it.
+
+Validates `format` before opening the file to avoid leaving an empty log file
+on a bad `--log-format` value.
 
 ### `deduplicateCalls(calls) []ExternalCall`
 

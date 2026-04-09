@@ -13,7 +13,7 @@ description: >
 compatibility: Requires trawl CLI (go install github.com/shairoth12/trawl/cmd/trawl@latest) and Go 1.25+. Target package must compile and have dependencies available.
 metadata:
   author: shairoth12
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 > Note: trawl reads source code — it does NOT instrument at runtime. It cannot detect
@@ -88,8 +88,19 @@ Entry point formats trawl accepts:
 ## Step 2: Construct the command
 
 ```bash
-trawl --pkg <pattern> --entry <name> [--algo vta|rta|cha] [--scope <patterns>] [--dedup] [--config trawl.yaml]
+trawl --pkg <pattern> --entry <name> [--algo vta|rta|cha] [--scope <patterns>] [--dedup] [--config trawl.yaml] [--log-level off|info|debug] [--log-file <path>] [--log-format text|json]
 ```
+
+**Logging flags** (trawl logs INFO-level stage progress to stderr by default):
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--log-level` | `info` | `off` silences all logs; `debug` adds per-edge decisions |
+| `--log-file` | _(stderr)_ | Redirect logs to a file, leaving stderr clean for true errors |
+| `--log-format` | `text` | `json` emits newline-delimited JSON — useful for agent frameworks that parse diagnostics |
+
+**In agent contexts**, use `--log-file /tmp/trawl.log` so logs don't mix with errors on stderr.
+The JSON result on stdout is always unaffected by logging flags.
 
 **Do not use `--dedup` unless the task explicitly requires it.** trawl's primary use
 case is identifying every external call that needs to be mocked or emulated in tests.
@@ -154,11 +165,17 @@ When in doubt for CHA, `--scope ./...` loads the whole module. It's slower but c
 ## Step 5: Run
 
 ```bash
-trawl --pkg ./cmd/server --entry HandleRequest --dedup 2>trawl_err.txt
+trawl --pkg ./cmd/server --entry HandleRequest --dedup --log-file trawl.log
 ```
 
-Capture stderr separately — warnings go there, not to stdout. Always check it before
-trusting the result (see Troubleshooting below).
+INFO-level stage logs go to stderr by default. Use `--log-file` to redirect them to
+a file so that stderr contains only true errors (warnings, fatal failures). Always
+check stderr / the log file before trusting the result (see Troubleshooting below).
+
+To run completely silently (stdout JSON only):
+```bash
+trawl --pkg ./cmd/server --entry HandleRequest --log-level off
+```
 
 ---
 

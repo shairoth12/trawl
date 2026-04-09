@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"io"
+	"log/slog"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -25,6 +27,7 @@ type Walker struct {
 	det    detector.Detector
 	module string // module path prefix, e.g. "github.com/foo/bar"
 	fset   *token.FileSet
+	log    *slog.Logger
 }
 
 // New returns a Walker that will traverse graph, classify packages with det,
@@ -33,8 +36,12 @@ type Walker struct {
 // module comes from LoadResult.Module. If module is empty (GOPATH workspace),
 // the walker recurses without a boundary.
 // fset comes from LoadResult.Prog.Fset and is used to resolve source positions.
-func New(graph *callgraph.Graph, d detector.Detector, module string, fset *token.FileSet) *Walker {
-	return &Walker{graph: graph, det: d, module: module, fset: fset}
+// log is used for debug-level edge decisions; pass nil to disable logging.
+func New(graph *callgraph.Graph, d detector.Detector, module string, fset *token.FileSet, log *slog.Logger) *Walker {
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &Walker{graph: graph, det: d, module: module, fset: fset, log: log}
 }
 
 // Walk performs a DFS from entry and returns all external service calls
@@ -93,6 +100,7 @@ func (w *Walker) dfs(
 			}
 
 			if isUbiquitousDispatch(edge) {
+				w.log.Debug("skip_edge", "pkg", recvPath, "reason", "ubiquitous_dispatch")
 				continue
 			}
 
@@ -118,6 +126,7 @@ func (w *Walker) dfs(
 							resolvedVia = trawl.ResolvedViaDirect
 							confidence = trawl.ConfidenceHigh
 						}
+						w.log.Debug("detect_hit", "pkg", recvPath, "service_type", string(svcType), "via", resolvedVia)
 						results = append(results, trawl.ExternalCall{
 							ServiceType: svcType,
 							ImportPath:  recvPath,
@@ -139,6 +148,7 @@ func (w *Walker) dfs(
 		// fmt.Stringer, io.Reader, etc.). CHA resolves these to every
 		// implementor in the program, producing false positives.
 		if isUbiquitousDispatch(edge) {
+			w.log.Debug("skip_edge", "pkg", pkgPath, "reason", "ubiquitous_dispatch")
 			continue
 		}
 
@@ -149,31 +159,38 @@ func (w *Walker) dfs(
 		// from the mock's package imports — the mock lives alongside the
 		// real implementation which imports the service library.
 		if isMockMethod(fn) {
-			if !strings.HasPrefix(pkgPath, w.module) {
-				if edge.Site != nil && edge.Site.Common().IsInvoke() {
-					if svcType := w.inferFromImports(pkg); svcType != "" {
-						ifaceLabel := interfaceMethodLabel(edge.Site.Common())
-						resolvedVia := trawl.ResolvedViaMockInference
-						confidence := trawl.ConfidenceMedium
-						// If the mock's package matches a detector indicator,
-						// the classification is confirmed — upgrade confidence.
-						if _, ok := w.det.Detect(pkgPath); ok {
-							resolvedVia = trawl.ResolvedViaDirect
-							confidence = trawl.ConfidenceHigh
-						}
-						results = append(results, trawl.ExternalCall{
-							ServiceType: svcType,
-							ImportPath:  pkgPath,
-							Function:    ifaceLabel,
-							File:        w.posFile(edge),
-							Line:        w.posLine(edge),
-							CallChain:   appendCopy(chain, ifaceLabel),
-							ResolvedVia: resolvedVia,
-							Confidence:  confidence,
-						})
+			// Same-module mocks: skip entirely.
+			if strings.HasPrefix(pkgPath, w.module) {
+				w.log.Debug("skip_edge", "pkg", pkgPath, "reason", "mock_method")
+				continue
+			}
+			// External mock via invoke: attempt service inference.
+			if edge.Site != nil && edge.Site.Common().IsInvoke() {
+				if svcType := w.inferFromImports(pkg); svcType != "" {
+					ifaceLabel := interfaceMethodLabel(edge.Site.Common())
+					resolvedVia := trawl.ResolvedViaMockInference
+					confidence := trawl.ConfidenceMedium
+					// If the mock's package matches a detector indicator,
+					// the classification is confirmed — upgrade confidence.
+					if _, ok := w.det.Detect(pkgPath); ok {
+						resolvedVia = trawl.ResolvedViaDirect
+						confidence = trawl.ConfidenceHigh
 					}
+					w.log.Debug("detect_hit", "pkg", pkgPath, "service_type", string(svcType), "via", resolvedVia)
+					results = append(results, trawl.ExternalCall{
+						ServiceType: svcType,
+						ImportPath:  pkgPath,
+						Function:    ifaceLabel,
+						File:        w.posFile(edge),
+						Line:        w.posLine(edge),
+						CallChain:   appendCopy(chain, ifaceLabel),
+						ResolvedVia: resolvedVia,
+						Confidence:  confidence,
+					})
+					continue
 				}
 			}
+			w.log.Debug("skip_edge", "pkg", pkgPath, "reason", "mock_method")
 			continue
 		}
 
@@ -182,6 +199,7 @@ func (w *Walker) dfs(
 		// silently skipped. After recording the call we do not recurse into
 		// library internals.
 		if svcType, ok := w.det.Detect(pkgPath); ok {
+			w.log.Debug("detect_hit", "pkg", pkgPath, "service_type", string(svcType), "via", "direct")
 			results = append(results, trawl.ExternalCall{
 				ServiceType: svcType,
 				ImportPath:  pkgPath,
@@ -204,6 +222,7 @@ func (w *Walker) dfs(
 			// msgraph wrapping net/http).
 			if edge.Site != nil && edge.Site.Common().IsInvoke() {
 				if svcType := w.inferFromImports(pkg); svcType != "" {
+					w.log.Debug("detect_hit", "pkg", pkgPath, "service_type", string(svcType), "via", "cross_module_inference")
 					results = append(results, trawl.ExternalCall{
 						ServiceType: svcType,
 						ImportPath:  pkgPath,
@@ -214,8 +233,10 @@ func (w *Walker) dfs(
 						ResolvedVia: trawl.ResolvedViaCrossModuleInference,
 						Confidence:  trawl.ConfidenceLow,
 					})
+					continue
 				}
 			}
+			w.log.Debug("skip_edge", "pkg", pkgPath, "reason", "outside_module")
 			continue
 		}
 
