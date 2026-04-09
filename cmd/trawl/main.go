@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/callgraph/rta"
 	"golang.org/x/tools/go/ssa"
 
@@ -107,6 +108,7 @@ func run(args []string, stdout io.Writer) error {
 	algoStr := fs.String("algo", string(analysis.AlgoVTA), "Call graph algorithm: vta (default), rta, or cha")
 	scope := fs.String("scope", "", "Extra package patterns for type visibility (comma-separated)")
 	dedupFlag := fs.Bool("dedup", false, "Deduplicate results by (service_type, import_path, function), keeping shortest call chain")
+	statsFlag := fs.Bool("stats", false, "Include analysis statistics in JSON output (packages loaded, call graph size, DFS counters, phase durations)")
 	timeoutStr := fs.String("timeout", "10m", "Maximum duration for the analysis (e.g. 30s, 5m, 1h); 0 means no timeout")
 	logLevel := fs.String("log-level", "info", "Log verbosity: off, error, warn, info, or debug")
 	logFile := fs.String("log-file", "", "Write logs to this file instead of stderr")
@@ -180,7 +182,8 @@ func run(args []string, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("loading package %q: %w", *pkg, err)
 	}
-	log.Info("packages_loaded", "pkg", *pkg, "elapsed", time.Since(t0).String())
+	loadDuration := time.Since(t0)
+	log.Info("packages_loaded", "pkg", *pkg, "elapsed", loadDuration.String())
 
 	log.Info("resolving_entry", "entry", *entry)
 	fn, err := analysis.Resolve(loadResult, *entry)
@@ -199,11 +202,12 @@ func run(args []string, stdout io.Writer) error {
 	w := walker.New(graph, det, loadResult.Module, loadResult.Prog.Fset, log)
 	log.Info("walking_graph", "entry", fn.String())
 	t1 := time.Now()
-	calls, err := w.Walk(fn)
+	calls, walkStats, err := w.Walk(fn)
 	if err != nil {
 		return fmt.Errorf("walking call graph: %w", err)
 	}
-	log.Info("walk_complete", "calls", len(calls), "elapsed", time.Since(t1).String())
+	walkDuration := time.Since(t1)
+	log.Info("walk_complete", "calls", len(calls), "elapsed", walkDuration.String())
 
 	// Strip the working-directory prefix from file paths so output contains
 	// relative paths rather than absolute filesystem paths.
@@ -233,6 +237,18 @@ func run(args []string, stdout io.Writer) error {
 	out.ExternalCalls = calls
 	if *dedupFlag {
 		out.Deduplicated = true
+	}
+
+	if *statsFlag {
+		out.Stats = &trawl.AnalysisStats{
+			PackagesLoaded: loadResult.PackagesLoaded,
+			CallGraphNodes: len(graph.Nodes),
+			CallGraphEdges: countGraphEdges(graph),
+			NodesVisited:   walkStats.NodesVisited,
+			EdgesExamined:  walkStats.EdgesExamined,
+			LoadDurationMs: loadDuration.Milliseconds(),
+			WalkDurationMs: walkDuration.Milliseconds(),
+		}
 	}
 
 	enc := json.NewEncoder(stdout)
@@ -291,6 +307,19 @@ func buildLogger(level, format, dst string) (*slog.Logger, func(), error) {
 		h = slog.NewTextHandler(out, opts)
 	}
 	return slog.New(h), cleanup, nil
+}
+
+// countGraphEdges returns the total number of outgoing call edges across all
+// nodes in graph. Returns 0 for a nil graph.
+func countGraphEdges(graph *callgraph.Graph) int {
+	if graph == nil {
+		return 0
+	}
+	total := 0
+	for _, node := range graph.Nodes {
+		total += len(node.Out)
+	}
+	return total
 }
 
 type dedupKey struct {

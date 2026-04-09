@@ -60,7 +60,7 @@ func pipeline(
 
 	det := detector.New(indicators)
 	w := walker.New(graph, det, loadResult.Module, loadResult.Prog.Fset, nil)
-	calls, err := w.Walk(fn)
+	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entryName, err)
 	}

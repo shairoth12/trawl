@@ -46,7 +46,7 @@ func walkFixture(t *testing.T, pattern, entry string) []trawl.ExternalCall {
 	}
 	det := detector.New(nil)
 	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
-	calls, err := w.Walk(fn)
+	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entry, err)
 	}
@@ -200,7 +200,7 @@ func TestWalk_EntryNotInGraph(t *testing.T) {
 
 	det := detector.New(nil)
 	w := walker.New(emptyResult.Graph, det, emptyResult.Module, emptyResult.Prog.Fset, nil)
-	_, err = w.Walk(fn)
+	_, _, err = w.Walk(fn)
 	if err == nil {
 		t.Fatalf("Walk(fn from different graph) = nil error, want an error about entry not found")
 	}
@@ -230,7 +230,7 @@ func TestWalk_RTA(t *testing.T) {
 
 	det := detector.New(nil)
 	w := walker.New(graph, det, result.Module, result.Prog.Fset, nil)
-	calls, err := w.Walk(fn)
+	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(HandleRequest, RTA): %v", err)
 	}
@@ -413,7 +413,7 @@ func walkFixtureCHA(t *testing.T, pattern, entry string, indicators []trawl.Indi
 	}
 	det := detector.New(indicators)
 	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
-	calls, err := w.Walk(fn)
+	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entry, err)
 	}
@@ -441,6 +441,58 @@ func TestWalk_GenericInterface_DirectDetection(t *testing.T) {
 	}
 	if !foundPostgres {
 		t.Errorf("no POSTGRES call found; got %d calls: %v", len(calls), calls)
+	}
+}
+
+func TestWalk_StatsNonZero(t *testing.T) {
+	// Not parallel: analysis.Load shells out to the go toolchain.
+	root := moduleRoot(t)
+	result, err := analysis.Load(t.Context(), root, "./testdata/basic", analysis.AlgoVTA)
+	if err != nil {
+		t.Fatalf("analysis.Load: %v", err)
+	}
+	fn, err := analysis.Resolve(result, "HandleRequest")
+	if err != nil {
+		t.Fatalf("analysis.Resolve: %v", err)
+	}
+	det := detector.New(nil)
+	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
+	_, stats, err := w.Walk(fn)
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if stats.NodesVisited == 0 {
+		t.Errorf("WalkStats.NodesVisited = 0, want > 0")
+	}
+	if stats.EdgesExamined == 0 {
+		t.Errorf("WalkStats.EdgesExamined = 0, want > 0")
+	}
+}
+
+func TestWalk_StatsReset(t *testing.T) {
+	// Not parallel: analysis.Load shells out to the go toolchain.
+	root := moduleRoot(t)
+	result, err := analysis.Load(t.Context(), root, "./testdata/basic", analysis.AlgoVTA)
+	if err != nil {
+		t.Fatalf("analysis.Load: %v", err)
+	}
+	fn, err := analysis.Resolve(result, "HandleRequest")
+	if err != nil {
+		t.Fatalf("analysis.Resolve: %v", err)
+	}
+	det := detector.New(nil)
+	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
+
+	_, stats1, err := w.Walk(fn)
+	if err != nil {
+		t.Fatalf("Walk (first): %v", err)
+	}
+	_, stats2, err := w.Walk(fn)
+	if err != nil {
+		t.Fatalf("Walk (second): %v", err)
+	}
+	if stats1 != stats2 {
+		t.Errorf("Walk called twice on same input: stats1=%+v, stats2=%+v, want equal", stats1, stats2)
 	}
 }
 

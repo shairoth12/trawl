@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -177,5 +179,79 @@ func TestDeduplicateCalls_Empty(t *testing.T) {
 
 	if got != nil {
 		t.Errorf("deduplicateCalls(nil) = %v, want nil", got)
+	}
+}
+
+// testdataPath returns the path to the testdata directory from the module root.
+// Uses runtime.Caller so it works regardless of the test working directory.
+func testdataPath(subdir string) string {
+	_, file, _, _ := runtime.Caller(0)
+	// file: .../cmd/trawl/main_test.go → cmd/trawl/ → cmd/ → module root
+	moduleRoot := filepath.Dir(filepath.Dir(filepath.Dir(file)))
+	return filepath.Join(moduleRoot, "testdata", subdir)
+}
+
+func TestRun_Stats(t *testing.T) {
+	// Not parallel: analysis.Load shells out to the go toolchain.
+	var buf bytes.Buffer
+	err := run([]string{
+		"--pkg", testdataPath("basic"),
+		"--entry", "HandleRequest",
+		"--stats",
+		"--log-level", "off",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("run(--stats) error = %v, want nil", err)
+	}
+
+	var result trawl.Result
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal error: %v", err)
+	}
+	if result.Stats == nil {
+		t.Fatal("Result.Stats = nil, want non-nil when --stats is provided")
+	}
+	s := result.Stats
+	if s.PackagesLoaded == 0 {
+		t.Errorf("Stats.PackagesLoaded = 0, want > 0")
+	}
+	if s.CallGraphNodes == 0 {
+		t.Errorf("Stats.CallGraphNodes = 0, want > 0")
+	}
+	if s.CallGraphEdges == 0 {
+		t.Errorf("Stats.CallGraphEdges = 0, want > 0")
+	}
+	if s.NodesVisited == 0 {
+		t.Errorf("Stats.NodesVisited = 0, want > 0")
+	}
+	if s.EdgesExamined == 0 {
+		t.Errorf("Stats.EdgesExamined = 0, want > 0")
+	}
+	if s.LoadDurationMs < 0 {
+		t.Errorf("Stats.LoadDurationMs = %d, want >= 0", s.LoadDurationMs)
+	}
+	if s.WalkDurationMs < 0 {
+		t.Errorf("Stats.WalkDurationMs = %d, want >= 0", s.WalkDurationMs)
+	}
+}
+
+func TestRun_NoStats_OmitsField(t *testing.T) {
+	// Not parallel: analysis.Load shells out to the go toolchain.
+	var buf bytes.Buffer
+	err := run([]string{
+		"--pkg", testdataPath("basic"),
+		"--entry", "HandleRequest",
+		"--log-level", "off",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("run() error = %v, want nil", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("json.Unmarshal error: %v", err)
+	}
+	if _, ok := raw["stats"]; ok {
+		t.Errorf("JSON output contains \"stats\" key without --stats flag, want omitted")
 	}
 }

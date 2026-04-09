@@ -24,12 +24,26 @@ const (
 	ServiceTypeEtcd          ServiceType = "ETCD"
 )
 
+// AnalysisStats holds diagnostic measurements from a single analysis run.
+// All duration fields are wall-clock milliseconds measured during the run.
+// Stats is only populated when the --stats flag is provided.
+type AnalysisStats struct {
+	PackagesLoaded int   `json:"packages_loaded"`  // total packages loaded transitively
+	CallGraphNodes int   `json:"call_graph_nodes"` // total functions in the call graph
+	CallGraphEdges int   `json:"call_graph_edges"` // total call sites in the call graph
+	NodesVisited   int   `json:"nodes_visited"`    // unique functions entered during DFS
+	EdgesExamined  int   `json:"edges_examined"`   // total edges considered during DFS (including skipped)
+	LoadDurationMs int64 `json:"load_duration_ms"` // milliseconds spent loading packages
+	WalkDurationMs int64 `json:"walk_duration_ms"` // milliseconds spent walking the call graph
+}
+
 // Result holds the analysis output for a single entry point function.
 type Result struct {
 	EntryPoint    string         `json:"entry_point"`
 	Package       string         `json:"package"`
 	ExternalCalls []ExternalCall `json:"external_calls"`
 	Deduplicated  bool           `json:"deduplicated,omitempty"`
+	Stats         *AnalysisStats `json:"stats,omitempty"`
 }
 
 // NewResult returns a Result with ExternalCalls initialized to a non-nil empty slice.
