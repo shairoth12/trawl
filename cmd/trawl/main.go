@@ -283,7 +283,7 @@ func buildLogger(level, format, dst string) (*slog.Logger, func(), error) {
 		cleanup = func() { _ = f.Close() }
 	}
 
-	opts := &slog.HandlerOptions{Level: lvl}
+	opts := &slog.HandlerOptions{Level: lvl, AddSource: lvl == slog.LevelDebug}
 	var h slog.Handler
 	if strings.ToLower(format) == "json" {
 		h = slog.NewJSONHandler(out, opts)
