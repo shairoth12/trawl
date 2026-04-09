@@ -9,7 +9,8 @@ trawl writes a single JSON object to stdout. This document is the authoritative 
   "entry_point":    "string",
   "package":        "string",
   "external_calls": [ ... ],
-  "deduplicated":   true
+  "deduplicated":   true,
+  "stats":          { ... }
 }
 ```
 
@@ -20,7 +21,44 @@ entry_point    │ string   │ YES            │ Fully-qualified SSA name of r
 package        │ string   │ YES            │ Import path of the directly-analyzed package
 external_calls │ array    │ YES            │ List of ExternalCall objects. Never null, may be empty.
 deduplicated   │ boolean  │ NO             │ Present and true only when --dedup was used
+stats          │ object   │ NO             │ Present only when --stats is passed; see AnalysisStats below
 ```
+
+## AnalysisStats Object
+
+Present in the top-level output only when `--stats` is passed.
+
+```json
+{
+  "packages_loaded": 1911,
+  "call_graph_nodes": 64320,
+  "call_graph_edges": 26548,
+  "nodes_visited": 60,
+  "edges_examined": 430,
+  "load_duration_ms": 2177,
+  "walk_duration_ms": 0
+}
+```
+
+```
+Field             │ Type    │ Description
+──────────────────┼─────────┼───────────────────────────────────────────────────────────────────
+packages_loaded   │ integer │ Total packages transitively loaded by the go toolchain (packages.Visit count)
+call_graph_nodes  │ integer │ Total functions (nodes) in the constructed call graph
+call_graph_edges  │ integer │ Total call sites (edges) across all nodes in the call graph
+nodes_visited     │ integer │ Unique call graph nodes entered during the DFS walk
+edges_examined    │ integer │ Total outgoing edges considered during DFS (including skipped)
+load_duration_ms  │ integer │ Wall-clock milliseconds from package load start through call graph construction (all algorithms)
+walk_duration_ms  │ integer │ Wall-clock milliseconds spent in the DFS walk; typically 0 for most analyses
+```
+
+**Interpreting stats:**
+
+- `packages_loaded` and `load_duration_ms` are the primary indicators of analysis cost. Load time scales with package count, not call graph size.
+- `load_duration_ms` is consistent across all algorithms: it covers package load + SSA build + call graph construction. For VTA/CHA the call graph is built inside `analysis.Load`; for RTA it is built by `rta.Analyze` immediately after, so both phases are included in the timer.
+- `nodes_visited / call_graph_nodes` shows coverage: for a deep entry point this ratio approaches 1; for a shallow handler it is typically < 1%.
+- `walk_duration_ms` reports 0 for most analyses because the DFS completes in sub-millisecond time. This is expected and correct.
+- `call_graph_edges` counts all edges in the full graph (constructed once). `edges_examined` counts only edges actually traversed from the given entry point.
 
 ## ExternalCall Object
 
@@ -201,4 +239,10 @@ trawl --pkg ./cmd/server --entry Handle | jq '[.external_calls[] | select(.confi
 
 # Get deduplicated import paths
 trawl --pkg ./cmd/server --entry Handle --dedup | jq '[.external_calls[].import_path] | unique'
+
+# Inspect analysis diagnostics
+trawl --pkg ./cmd/server --entry Handle --stats --log-level off | jq .stats
+
+# Check DFS coverage (nodes visited vs total graph size)
+trawl --pkg ./cmd/server --entry Handle --stats --log-level off | jq '.stats | {coverage: (.nodes_visited / .call_graph_nodes * 100 | round | tostring + "%"), load_ms: .load_duration_ms}'
 ```

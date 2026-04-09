@@ -194,6 +194,59 @@ func TestExternalCallJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestResultWithStats_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	want := Result{
+		EntryPoint:    "github.com/example/app.HandleRequest",
+		Package:       "github.com/example/app",
+		ExternalCalls: []ExternalCall{},
+		Stats: &AnalysisStats{
+			PackagesLoaded: 12,
+			CallGraphNodes: 300,
+			CallGraphEdges: 850,
+			NodesVisited:   45,
+			EdgesExamined:  120,
+			LoadDurationMs: 1500,
+			WalkDurationMs: 30,
+		},
+	}
+
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("json.Marshal(Result with Stats) error: %v", err)
+	}
+
+	var got Result
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal(Result with Stats) error: %v", err)
+	}
+
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Result with Stats JSON round-trip mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestResultWithoutStats_OmitsStatsKey(t *testing.T) {
+	t.Parallel()
+
+	r := NewResult("github.com/example/app.HandleRequest", "github.com/example/app")
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("json.Marshal(Result without Stats) error: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal to raw map error: %v", err)
+	}
+
+	if _, ok := raw["stats"]; ok {
+		t.Errorf("JSON output contains %q key, want omitted when Stats is nil", "stats")
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 

@@ -17,17 +17,25 @@ import (
 	"github.com/shairoth12/trawl/internal/detector"
 )
 
+// WalkStats holds diagnostic counters collected during a single Walk call.
+// The zero value is a valid, empty stats result.
+type WalkStats struct {
+	NodesVisited  int // unique call graph nodes entered during DFS
+	EdgesExamined int // total outgoing edges considered (including skipped)
+}
+
 // Walker traverses a call graph from an entry point function and reports every
 // external service call reachable within the module boundary.
 //
 // Walker methods are not safe for concurrent use. Construct a new Walker per
 // goroutine or add your own synchronization.
 type Walker struct {
-	graph  *callgraph.Graph
-	det    detector.Detector
-	module string // module path prefix, e.g. "github.com/foo/bar"
-	fset   *token.FileSet
-	log    *slog.Logger
+	graph         *callgraph.Graph
+	det           detector.Detector
+	module        string // module path prefix, e.g. "github.com/foo/bar"
+	fset          *token.FileSet
+	log           *slog.Logger
+	edgesExamined int // reset at the start of each Walk call
 }
 
 // New returns a Walker that will traverse graph, classify packages with det,
@@ -45,7 +53,7 @@ func New(graph *callgraph.Graph, d detector.Detector, module string, fset *token
 }
 
 // Walk performs a DFS from entry and returns all external service calls
-// reachable from it.
+// reachable from it, along with diagnostic counters for the traversal.
 //
 // Walk returns an error if entry is not present in the call graph; this
 // commonly happens with RTA when the entry point was not supplied as a root.
@@ -53,20 +61,26 @@ func New(graph *callgraph.Graph, d detector.Detector, module string, fset *token
 // upfront.
 //
 // The returned slice is always non-nil, even when no external calls are found.
-func (w *Walker) Walk(entry *ssa.Function) ([]trawl.ExternalCall, error) {
+// WalkStats is zeroed on error.
+func (w *Walker) Walk(entry *ssa.Function) ([]trawl.ExternalCall, WalkStats, error) {
 	if w.graph == nil {
-		return nil, fmt.Errorf("call graph is nil — did you forget to call rta.Analyze?")
+		return nil, WalkStats{}, fmt.Errorf("call graph is nil — did you forget to call rta.Analyze?")
 	}
 	node := w.graph.Nodes[entry]
 	if node == nil {
-		return nil, fmt.Errorf("entry function %s not found in call graph — try --algo vta", entry.String())
+		return nil, WalkStats{}, fmt.Errorf("entry function %s not found in call graph — try --algo vta", entry.String())
 	}
+	w.edgesExamined = 0
 	visited := make(map[*callgraph.Node]bool)
 	results := w.dfs(node, []string{entry.String()}, visited)
 	if results == nil {
 		results = []trawl.ExternalCall{}
 	}
-	return results, nil
+	stats := WalkStats{
+		NodesVisited:  len(visited),
+		EdgesExamined: w.edgesExamined,
+	}
+	return results, stats, nil
 }
 
 // dfs performs a depth-first traversal of the call graph starting at node.
@@ -84,6 +98,7 @@ func (w *Walker) dfs(
 
 	var results []trawl.ExternalCall
 	for _, edge := range node.Out {
+		w.edgesExamined++
 		callee := edge.Callee
 		if callee == nil || callee.Func == nil {
 			continue

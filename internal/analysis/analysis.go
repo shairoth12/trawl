@@ -36,6 +36,10 @@ type LoadResult struct {
 	// Module is the module path extracted from go.mod (e.g. "github.com/foo/bar").
 	// It is empty for GOPATH workspaces that have no go.mod.
 	Module string
+
+	// PackagesLoaded is the total number of packages transitively loaded into
+	// the build, including dependencies. Useful for diagnosing slow analysis.
+	PackagesLoaded int
 }
 
 // Algo identifies the call graph construction algorithm.
@@ -129,6 +133,9 @@ func Load(ctx context.Context, dir, pattern string, algo Algo, scopePatterns ...
 		return nil, err
 	}
 
+	var pkgCount int
+	packages.Visit(pkgs, func(*packages.Package) bool { pkgCount++; return true }, nil)
+
 	prog, ssaPkgs := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
 	prog.Build() // Build has no error return; panics on internal SSA errors.
 
@@ -146,9 +153,10 @@ func Load(ctx context.Context, dir, pattern string, algo Algo, scopePatterns ...
 	}
 
 	result := &LoadResult{
-		Prog:   prog,
-		SSAPkg: ssaPkg,
-		Module: modulePath,
+		Prog:           prog,
+		SSAPkg:         ssaPkg,
+		Module:         modulePath,
+		PackagesLoaded: pkgCount,
 	}
 
 	switch algo {
