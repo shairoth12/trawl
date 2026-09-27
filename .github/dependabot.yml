@@ -14,3 +14,10 @@ updates:
       interval: weekly
     labels:
       - dependencies
+
+  - package-ecosystem: docker
+    directory: /.devcontainer
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
