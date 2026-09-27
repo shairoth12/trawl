@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Install golangci-lint
-curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin"
+golangci_version=$(<.golangci-version)
+curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "$golangci_version"
 
 # Install additional Go tools
 go install mvdan.cc/gofumpt@latest
