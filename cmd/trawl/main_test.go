@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -253,5 +254,73 @@ func TestRun_NoStats_OmitsField(t *testing.T) {
 	}
 	if _, ok := raw["stats"]; ok {
 		t.Errorf("JSON output contains \"stats\" key without --stats flag, want omitted")
+	}
+}
+
+// runInDir runs the CLI with dir as the working directory.
+func runInDir(t *testing.T, dir string, args []string, stdout io.Writer) error {
+	t.Helper()
+	t.Chdir(dir)
+	return run(args, stdout)
+}
+
+func TestRun_CrossModule_Stats(t *testing.T) {
+	// Not parallel: analysis.Load shells out to the go toolchain; t.Chdir forbids t.Parallel.
+	var buf bytes.Buffer
+	err := runInDir(t, testdataPath(filepath.Join("crossmodule", "svc")),
+		[]string{"--pkg", ".", "--entry", "HandleGet", "--algo", "cha", "--stats", "--log-level", "off"}, &buf)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var result trawl.Result
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if len(result.ExternalCalls) != 1 {
+		t.Fatalf("external_calls = %d, want 1: %+v", len(result.ExternalCalls), result.ExternalCalls)
+	}
+	ec := result.ExternalCalls[0]
+	if ec.ResolvedVia != trawl.ResolvedViaCrossModuleTrace || ec.File != "svc.go" || ec.ShortFunction != "(*sqlStore).Get" {
+		t.Errorf("record = %+v, want cross_module_trace at svc.go via (*sqlStore).Get", ec)
+	}
+	s := result.Stats
+	if s == nil || s.DependencyPackages != 3 || s.PackagesAnalyzed != 4 || s.UnresolvedInvokes != 0 {
+		t.Errorf("stats = %+v, want dependency_packages=3 packages_analyzed=4 unresolved_invokes=0", s)
+	}
+}
+
+func TestRun_CrossModule_DepsNone(t *testing.T) {
+	// Not parallel: analysis.Load shells out to the go toolchain; t.Chdir forbids t.Parallel.
+	var buf bytes.Buffer
+	err := runInDir(t, testdataPath(filepath.Join("crossmodule", "svc")),
+		[]string{"--pkg", ".", "--entry", "HandleGet", "--algo", "cha", "--deps", "none", "--stats", "--log-level", "off"}, &buf)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var result trawl.Result
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	// Only a mock implements Store in the program, so the invoke is unresolved
+	// and reported abstractly from the interface's package imports.
+	if len(result.ExternalCalls) != 1 || result.ExternalCalls[0].ResolvedVia != trawl.ResolvedViaInterfaceDispatch {
+		t.Errorf("external_calls = %+v, want one interface_dispatch record under --deps none", result.ExternalCalls)
+	}
+	if s := result.Stats; s == nil || s.DependencyPackages != 0 || s.UnresolvedInvokes != 1 {
+		t.Errorf("stats = %+v, want dependency_packages=0 unresolved_invokes=1", s)
+	}
+}
+
+func TestRun_InvalidDeps(t *testing.T) {
+	// Not parallel: analysis.Load shells out to the go toolchain.
+	var buf bytes.Buffer
+	err := run([]string{"--pkg", testdataPath("basic"), "--entry", "HandleRequest", "--deps", "bogus", "--log-level", "off"}, &buf)
+	if err == nil {
+		t.Fatal("run(--deps bogus) = nil error, want an error")
+	}
+	for _, want := range []string{"bogus", "auto", "none"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }

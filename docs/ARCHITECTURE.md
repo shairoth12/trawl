@@ -53,8 +53,10 @@ Stage 2: Load config (YAML → Config struct)
     │
     ▼
 Stage 3: Load packages + build SSA + construct call graph
-    │  go/packages → ssa.Program → CHA seed → VTA/CHA graph
-    │  (or nil graph for RTA — deferred to after resolution)
+    │  go/packages → select dependency packages (same-module + implementors
+    │  of invoked interfaces, ≤3 rounds, ≤200) → ssa.Program with bodies for
+    │  initial + selected packages (built per package; panics become errors)
+    │  → CHA seed → VTA/CHA graph (or nil graph for RTA — deferred)
     ▼
 Stage 4: Resolve entry point
     │  entry string → *ssa.Function
@@ -64,29 +66,37 @@ Stage 5: Build RTA graph (only when --algo rta)
     │  rta.Analyze([]*ssa.Function{fn}, true) → graph
     ▼
 Stage 6: DFS Walk
-    │  walker.New(graph, detector, module, fset, log)
+    │  walker.New(graph, detector, walker.Options{Module, DependencyPkgs, Fset, Log})
     │  walker.Walk(entry) → []ExternalCall
     │
     │  For each edge in the call graph:
-    │    ┌─ Is package nil? (generic instantiation)
-    │    │    → recover receiver pkg path
-    │    │    → same-module? recurse : classify external generic
+    │    ┌─ calleePkg(fn): Package(), else Origin() (generic instantiation),
+    │    │    else Object(), else receiver type; none → skip
     │    │
     │    ├─ Ubiquitous interface dispatch? (error, io.Reader, etc.)
     │    │    → skip
     │    │
     │    ├─ Mock type method? (type name starts with "Mock")
-    │    │    → skip (same-module) or infer from imports (external)
+    │    │    → skip when the real implementation is available
+    │    │      (same-module, built dependency, or inside dependency code);
+    │    │      otherwise infer from imports (external, invoke edge)
     │    │
     │    ├─ Detector match? (import path matches indicator)
     │    │    → emit ExternalCall (direct, high confidence)
     │    │
-    │    ├─ Outside module boundary?
-    │    │    → attempt cross-module inference via transitive imports
-    │    │    → stop recursion
+    │    ├─ Inside module boundary → recurse DFS (attribution resets to
+    │    │    module-side call sites, also for callbacks from dependencies)
     │    │
-    │    └─ Inside module boundary
-    │         → recurse DFS
+    │    ├─ Built dependency package → open a crossing (or continue the
+    │    │    active one) and recurse; findings attribute to the boundary
+    │    │    call site as cross_module_trace
+    │    │
+    │    └─ Body-less external, invoke edge
+    │         → cross-module inference via transitive imports, stop
+    │
+    │  After the edges: every interface call site in the node with no
+    │  non-mock callee → classifyUnresolved → interface_dispatch record
+    │  Finally mergeByPosition collapses hits for one call site
     ▼
 Stage 7: Post-process + JSON output
     │  ├─ Strip absolute file paths → relative
@@ -115,11 +125,17 @@ github.com/shairoth12/trawl/
 │
 ├── internal/
 │   ├── analysis/
-│   │   ├── analysis.go   Load(): go/packages → SSA → call graph
-│   │   │                 Algo type: "vta" | "rta" | "cha"
+│   │   ├── analysis.go   Load(ctx, Options): go/packages → SSA → call graph
+│   │   │                 Options{Dir, Pattern, Algo, Scope, Deps, MaxDependencyPkgs, IsIndicator}
+│   │   │                 Algo type: "vta" | "rta" | "cha"; DepPolicy: "auto" | "none"
+│   │   │                 createProgram(): ssautil.Packages clone with a wider "with bodies" set
+│   │   │                 buildProgram(): per-package Build in bounded goroutines, panic → error
 │   │   │                 ErrPackageLoad sentinel
 │   │   │                 VTA pipeline: CHA seed → vta.CallGraph(allFns, chaGraph)
 │   │   │                 CRITICAL: never call graph.DeleteSyntheticNodes()
+│   │   │
+│   │   ├── deps.go       selectDependencyPkgs(): same-module packages + implementors of
+│   │   │                 invoked interfaces, ≤3 rounds; never stdlib or indicator packages
 │   │   │
 │   │   └── resolve.go    Resolve(): entry string → *ssa.Function
 │   │                     3 formats: FuncName, Type.Method, BareMethod
@@ -185,7 +201,7 @@ ExternalCall {
     File           string              // relative source path
     Line           int                 // 0 for synthetic edges
     CallChain      []string            // entry → … → call site
-    ResolvedVia    string              // "direct" | "mock_inference" | "cross_module_inference"
+    ResolvedVia    string              // "direct" | "mock_inference" | "cross_module_inference" | "cross_module_trace" | "interface_dispatch"
     Confidence     string              // "high" | "medium" | "low"
     ShortFunction  string              // Function with paths/generics stripped
     ShortCallChain []string            // CallChain with same stripping
@@ -203,32 +219,46 @@ Config {
 }
 
 LoadResult {
-    Prog   *ssa.Program
-    Graph  *callgraph.Graph            // nil for RTA until rta.Analyze
-    SSAPkg *ssa.Package
-    Module string                      // from go.mod
+    Prog                  *ssa.Program
+    Graph                 *callgraph.Graph   // nil for RTA until rta.Analyze
+    SSAPkg                *ssa.Package
+    Module                string             // from go.mod
+    PackagesLoaded        int
+    DependencyPkgs        []string           // non-initial packages with bodies
+    DependencyPkgsSkipped int                // dropped by MaxDependencyPkgs
+    PackagesAnalyzed      int                // initial + len(DependencyPkgs)
 }
 
-Algo  string                           // "vta" | "rta" | "cha"
+Options {
+    Dir, Pattern      string
+    Algo              Algo                   // "vta" | "rta" | "cha"
+    Scope             []string
+    Deps              DepPolicy              // "auto" (default) | "none"
+    MaxDependencyPkgs int                    // 0 → 200
+    IsIndicator       func(string) bool      // indicator packages never get bodies
+}
 ```
 
 ## Walker Emission Sites
 
-The DFS walker has 4 distinct code paths that emit `ExternalCall` records:
+Every emission goes through `record()`, which attributes a hit either to the
+edge's own call site (module code) or to the active crossing's boundary site
+(dependency code). The distinct sources:
 
 ```
-Site │ Condition                                │ ResolvedVia              │ Confidence
-─────┼──────────────────────────────────────────┼──────────────────────────┼───────────
- G   │ pkg==nil, external generic, invoke edge  │ varies (default→upgrade)│ varies
- 2   │ pkg!=nil, isMockMethod, external module  │ mock_inference or direct│ medium/high
- 3   │ pkg!=nil, det.Detect() matches           │ direct                  │ high
- 4   │ pkg!=nil, outside module, invoke edge    │ cross_module_inference  │ low
+Site │ Condition                                          │ ResolvedVia             │ Confidence
+─────┼────────────────────────────────────────────────────┼─────────────────────────┼───────────
+ M   │ isMockMethod, external, body-less, invoke edge     │ mock_inference or direct│ medium/high
+ D   │ det.Detect() matches, in module code               │ direct                  │ high
+ T   │ any evidence found while a crossing is active      │ cross_module_trace      │ that of the evidence
+ X   │ body-less external callee, invoke edge             │ cross_module_inference  │ low
+ X'  │ built dependency walked, nothing found, invoke edge│ cross_module_inference  │ low
+ I   │ interface call with no non-mock callee             │ interface_dispatch      │ high (indicator pkg) / low (inferred)
 ```
 
-Site G and Site 2 use a default-then-upgrade pattern:
-1. Set default (cross_module_inference/low or mock_inference/medium)
-2. If `isMockReceiver(fn)` → mock_inference/medium
-3. If `det.Detect(path)` matches → direct/high (overrides previous)
+Site M upgrades mock_inference/medium to direct/high when `det.Detect(path)`
+matches the mock's package. Site I ignores universe, stdlib and ubiquitous
+interfaces, and only counts (never reports) same-module interfaces.
 
 ## Dependency Graph
 
@@ -297,7 +327,23 @@ ssaPkg.Members[typeName] → (*ssa.Type) → .Type() → (*types.Named) → .Met
 
 ### 8. Generic instantiations have `fn.Package() == nil`
 
-Go SSA sets `Package()` to nil for all generic type instantiations. The walker recovers the package path from the receiver's `*types.Named` type via `receiverPkgPath(fn)`.
+Go SSA sets `Package()` to nil for all generic instantiations. `calleePkg(fn)` recovers the package from `fn.Origin()` (the generic declaration, which has a package), then `fn.Object()`, then the receiver's `*types.Named`. Top-level generic helpers (`Map[T, U]`) therefore no longer drop their edges.
+
+### 9. Dependency bodies are selected, not blanket-built
+
+Building bodies for all transitive packages is unbounded (thousands of packages). `selectDependencyPkgs` picks packages that declare a concrete, non-mock implementor of an interface the analyzed code invokes — a types-level pass over `TypesInfo.Selections` — and repeats up to 3 rounds so facade → client-wrapper chains resolve. A second SSA build is impossible: `CreatePackage` must be called once per `*types.Package`, so the selection happens before `ssa.NewProgram`.
+
+### 10. Findings inside dependency code attribute to the boundary call site
+
+The "what do I mock" use case needs the module-side line. A `crossing` carries the boundary call's position, callee and package; `record()` rewrites every hit made under it to that site with `resolved_via: cross_module_trace`, while `call_chain` keeps the path into the dependency.
+
+### 11. Position merge is always on
+
+CHA yields several hits for one source call (concrete body + mock edge; QueryRowContext + Scan). `mergeByPosition` collapses hits with the same service type and call-site position — higher confidence wins, ties keep the interface label — before `--dedup` runs.
+
+### 12. `Program.Build` is not used
+
+`Program.Build` runs each `Package.Build` in its own goroutine; a panic there cannot be recovered by the caller. `buildProgram` drives `Package.Build` itself in bounded goroutines and converts a panic into an error that names `--deps none`.
 
 ## Test Strategy
 
@@ -306,10 +352,10 @@ Level          │ Files                          │ Count │ What it validate
 ───────────────┼────────────────────────────────┼───────┼──────────────────────────────────
 Unit           │ trawl_test.go                  │ 19    │ Type serialization, ShortenName, Config validation
 Unit           │ internal/detector/*_test.go    │ 8     │ Prefix matching, SkipInternal, WrapperFor, builtins
-Unit           │ internal/analysis/*_test.go    │ 12    │ Package loading, SSA build, entry resolution
-Unit           │ internal/walker/walker_test.go │ 12    │ DFS traversal, filters, inference, generics
-Unit           │ cmd/trawl/main_test.go         │ 7     │ Version info, dedup, help output
-Integration    │ integration_test.go            │ 13    │ Full pipeline: load → resolve → walk → JSON
+Unit           │ internal/analysis/*_test.go    │ 22    │ Package loading, dependency selection, SSA build, entry resolution
+Unit           │ internal/walker/*_test.go      │ 30    │ DFS traversal, filters, inference, generics, crossings, merge
+Unit           │ cmd/trawl/main_test.go         │ 12    │ Version info, dedup, help output, --deps, stats
+Integration    │ integration_test.go            │ 15    │ Full pipeline: load → resolve → walk → JSON (incl. two-module fixture)
 ```
 
-All tests use `t.Parallel()` at both top and subtest levels. Table-driven tests are the norm. The integration tests use a `pipeline()` helper that runs the entire analysis chain against `testdata/` fixtures.
+Tests use `t.Parallel()` at both top and subtest levels except those that call `analysis.Load` more than once per function. The two-module fixture under `testdata/crossmodule/` (`svc` analyzed module + `lib` dependency module, wired by `replace`) drives the dependency-body tests. Table-driven tests are the norm. The integration tests use a `pipeline()` helper that runs the entire analysis chain against `testdata/` fixtures.

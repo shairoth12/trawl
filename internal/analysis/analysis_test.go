@@ -7,8 +7,43 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"golang.org/x/tools/go/callgraph"
+	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/ssa/ssautil"
+
 	"github.com/shairoth12/trawl/internal/analysis"
 )
+
+// hasEdge reports whether the call graph has a direct edge from → to.
+func hasEdge(g *callgraph.Graph, from, to *ssa.Function) bool {
+	n := g.Nodes[from]
+	if n == nil {
+		return false
+	}
+	for _, e := range n.Out {
+		if e.Callee != nil && e.Callee.Func == to {
+			return true
+		}
+	}
+	return false
+}
+
+// crossmoduleSvcDir returns the root of the two-module fixture's service module.
+func crossmoduleSvcDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(moduleRoot(t), "testdata", "crossmodule", "svc")
+}
+
+// findFunc returns the SSA function whose String() equals name, or nil.
+func findFunc(prog *ssa.Program, name string) *ssa.Function {
+	for fn := range ssautil.AllFunctions(prog) {
+		if fn.String() == name {
+			return fn
+		}
+	}
+	return nil
+}
 
 // moduleRoot returns the module root directory by locating the source file
 // via runtime.Caller. This is robust regardless of the working directory.
@@ -50,19 +85,14 @@ func TestLoad(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		dir             string
-		pattern         string
-		algo            analysis.Algo
-		scope           []string
+		opts            analysis.Options
 		wantErr         bool
 		wantErrSentinel error
 		check           func(t *testing.T, r *analysis.LoadResult)
 	}{
 		{
-			name:    "VTA_basic",
-			dir:     root,
-			pattern: "./testdata/basic",
-			algo:    analysis.AlgoVTA,
+			name: "VTA_basic",
+			opts: analysis.Options{Dir: root, Pattern: "./testdata/basic", Algo: analysis.AlgoVTA},
 			check: func(t *testing.T, r *analysis.LoadResult) {
 				t.Helper()
 				if r.SSAPkg == nil {
@@ -80,10 +110,8 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
-			name:    "RTA_nil_graph",
-			dir:     root,
-			pattern: "./testdata/basic",
-			algo:    analysis.AlgoRTA,
+			name: "RTA_nil_graph",
+			opts: analysis.Options{Dir: root, Pattern: "./testdata/basic", Algo: analysis.AlgoRTA},
 			check: func(t *testing.T, r *analysis.LoadResult) {
 				t.Helper()
 				if r.Graph != nil {
@@ -96,25 +124,18 @@ func TestLoad(t *testing.T) {
 		},
 		{
 			name:    "nonexistent_path",
-			dir:     root,
-			pattern: "./nonexistent",
-			algo:    analysis.AlgoVTA,
+			opts:    analysis.Options{Dir: root, Pattern: "./nonexistent", Algo: analysis.AlgoVTA},
 			wantErr: true,
 		},
 		{
 			name:            "broken_package",
-			dir:             brokenDir,
-			pattern:         ".",
-			algo:            analysis.AlgoVTA,
+			opts:            analysis.Options{Dir: brokenDir, Pattern: ".", Algo: analysis.AlgoVTA},
 			wantErr:         true,
 			wantErrSentinel: analysis.ErrPackageLoad,
 		},
 		{
-			name:    "VTA_with_scope",
-			dir:     root,
-			pattern: "./testdata/scope/leaf",
-			algo:    analysis.AlgoVTA,
-			scope:   []string{"./testdata/scope/..."},
+			name: "VTA_with_scope",
+			opts: analysis.Options{Dir: root, Pattern: "./testdata/scope/leaf", Algo: analysis.AlgoVTA, Scope: []string{"./testdata/scope/..."}},
 			check: func(t *testing.T, r *analysis.LoadResult) {
 				t.Helper()
 				if r.SSAPkg.Pkg.Name() != "leaf" {
@@ -126,11 +147,8 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
-			name:    "CHA_with_scope",
-			dir:     root,
-			pattern: "./testdata/scope/leaf",
-			algo:    analysis.AlgoCHA,
-			scope:   []string{"./testdata/scope/..."},
+			name: "CHA_with_scope",
+			opts: analysis.Options{Dir: root, Pattern: "./testdata/scope/leaf", Algo: analysis.AlgoCHA, Scope: []string{"./testdata/scope/..."}},
 			check: func(t *testing.T, r *analysis.LoadResult) {
 				t.Helper()
 				if r.SSAPkg.Pkg.Name() != "leaf" {
@@ -140,6 +158,62 @@ func TestLoad(t *testing.T) {
 					t.Errorf("Graph = nil, want non-nil")
 				}
 			},
+		},
+		{
+			name: "crossmodule_DepNone_no_dependency_bodies",
+			opts: analysis.Options{Dir: crossmoduleSvcDir(t), Pattern: ".", Algo: analysis.AlgoCHA, Deps: analysis.DepNone},
+			check: func(t *testing.T, r *analysis.LoadResult) {
+				t.Helper()
+				if r.Module != "example.com/svc" {
+					t.Errorf("Module = %q, want %q", r.Module, "example.com/svc")
+				}
+				if len(r.DependencyPkgs) != 0 {
+					t.Errorf("DependencyPkgs = %v, want none under DepNone", r.DependencyPkgs)
+				}
+				if fn := findFunc(r.Prog, "(*example.com/lib/store.sqlStore).Get"); fn != nil && len(fn.Blocks) != 0 {
+					t.Errorf("(*sqlStore).Get has %d blocks under DepNone, want 0", len(fn.Blocks))
+				}
+			},
+		},
+		{
+			name: "crossmodule_DepAuto_builds_dependency_bodies",
+			opts: analysis.Options{Dir: crossmoduleSvcDir(t), Pattern: ".", Algo: analysis.AlgoCHA},
+			check: func(t *testing.T, r *analysis.LoadResult) {
+				t.Helper()
+				want := []string{"example.com/lib/cache", "example.com/lib/store", "example.com/lib/search"}
+				if diff := cmp.Diff(want, r.DependencyPkgs); diff != "" {
+					t.Errorf("DependencyPkgs (-want +got):\n%s", diff)
+				}
+				if r.PackagesAnalyzed != 1+len(want) {
+					t.Errorf("PackagesAnalyzed = %d, want %d", r.PackagesAnalyzed, 1+len(want))
+				}
+				get := findFunc(r.Prog, "(*example.com/lib/store.sqlStore).Get")
+				if get == nil || len(get.Blocks) == 0 {
+					t.Fatalf("(*sqlStore).Get missing or body-less under DepAuto")
+				}
+				entry := findFunc(r.Prog, "(*example.com/svc.Handler).HandleGet")
+				if !hasEdge(r.Graph, entry, get) {
+					t.Errorf("no call-graph edge HandleGet → (*sqlStore).Get")
+				}
+			},
+		},
+		{
+			name: "cap_keeps_earlier_rounds",
+			opts: analysis.Options{Dir: crossmoduleSvcDir(t), Pattern: ".", Algo: analysis.AlgoCHA, MaxDependencyPkgs: 2},
+			check: func(t *testing.T, r *analysis.LoadResult) {
+				t.Helper()
+				if diff := cmp.Diff([]string{"example.com/lib/cache", "example.com/lib/store"}, r.DependencyPkgs); diff != "" {
+					t.Errorf("DependencyPkgs (-want +got):\n%s", diff)
+				}
+				if r.DependencyPkgsSkipped != 1 {
+					t.Errorf("DependencyPkgsSkipped = %d, want 1", r.DependencyPkgsSkipped)
+				}
+			},
+		},
+		{
+			name:    "invalid_deps_policy",
+			opts:    analysis.Options{Dir: root, Pattern: "./testdata/basic", Algo: analysis.AlgoVTA, Deps: analysis.DepPolicy("bogus")},
+			wantErr: true,
 		},
 	}
 
@@ -147,7 +221,7 @@ func TestLoad(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := analysis.Load(t.Context(), tc.dir, tc.pattern, tc.algo, tc.scope...)
+			result, err := analysis.Load(t.Context(), tc.opts)
 
 			if tc.wantErr {
 				if err == nil {

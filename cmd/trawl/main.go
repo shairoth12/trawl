@@ -3,7 +3,7 @@
 //
 // Usage:
 //
-//	trawl --pkg <package_pattern> --entry <function_name> [--config <yaml>] [--algo vta|rta]
+//	trawl --pkg <package_pattern> --entry <function_name> [--config <yaml>] [--algo vta|rta|cha] [--deps auto|none]
 package main
 
 import (
@@ -95,7 +95,7 @@ func run(args []string, stdout io.Writer) error {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		w := fs.Output()
-		_, _ = fmt.Fprintln(w, "Usage: trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>]")
+		_, _ = fmt.Fprintln(w, "Usage: trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>] [--deps auto|none]")
 		_, _ = fmt.Fprintln(w)
 		_, _ = fmt.Fprintln(w, "Flags:")
 		fs.PrintDefaults()
@@ -107,6 +107,7 @@ func run(args []string, stdout io.Writer) error {
 	configPath := fs.String("config", "", "Path to YAML config file for custom indicators")
 	algoStr := fs.String("algo", string(analysis.AlgoVTA), "Call graph algorithm: vta (default), rta, or cha")
 	scope := fs.String("scope", "", "Extra package patterns for type visibility (comma-separated)")
+	depsStr := fs.String("deps", string(analysis.DepAuto), "Dependency bodies: auto (build SSA for same-module packages and for dependency packages implementing interfaces the analyzed code invokes) or none")
 	dedupFlag := fs.Bool("dedup", false, "Deduplicate results by (service_type, import_path, function), keeping shortest call chain")
 	statsFlag := fs.Bool("stats", false, "Include analysis statistics in JSON output (packages loaded, call graph size, DFS counters, phase durations)")
 	timeoutStr := fs.String("timeout", "10m", "Maximum duration for the analysis (e.g. 30s, 5m, 1h); 0 means no timeout")
@@ -176,13 +177,24 @@ func run(args []string, stdout io.Writer) error {
 		}
 	}
 
-	log.Info("loading_packages", "pkg", *pkg, "algo", *algoStr)
+	det := detector.New(cfg.Indicators)
+
+	log.Info("loading_packages", "pkg", *pkg, "algo", *algoStr, "deps", *depsStr)
 	t0 := time.Now()
-	loadResult, err := analysis.Load(ctx, dir, *pkg, algo, scopePatterns...)
+	loadResult, err := analysis.Load(ctx, analysis.Options{
+		Dir: dir, Pattern: *pkg, Algo: algo, Scope: scopePatterns,
+		Deps:        analysis.DepPolicy(*depsStr),
+		IsIndicator: func(p string) bool { _, ok := det.Detect(p); return ok },
+	})
 	if err != nil {
 		return fmt.Errorf("loading package %q: %w", *pkg, err)
 	}
 	log.Info("packages_loaded", "pkg", *pkg, "elapsed", time.Since(t0).String())
+	log.Info("dependency_bodies", "count", len(loadResult.DependencyPkgs))
+	log.Debug("dependency_bodies_list", "pkgs", loadResult.DependencyPkgs)
+	if n := loadResult.DependencyPkgsSkipped; n > 0 {
+		log.Warn("dependency_bodies_truncated", "skipped", n, "limit", analysis.DefaultMaxDependencyPkgs)
+	}
 
 	log.Info("resolving_entry", "entry", *entry)
 	fn, err := analysis.Resolve(loadResult, *entry)
@@ -202,8 +214,7 @@ func run(args []string, stdout io.Writer) error {
 	// both phases complete.
 	loadDuration := time.Since(t0)
 
-	det := detector.New(cfg.Indicators)
-	w := walker.New(graph, det, loadResult.Module, loadResult.Prog.Fset, log)
+	w := walker.New(graph, det, walker.Options{Module: loadResult.Module, DependencyPkgs: loadResult.DependencyPkgs, Fset: loadResult.Prog.Fset, Log: log})
 	log.Info("walking_graph", "entry", fn.String())
 	t1 := time.Now()
 	calls, walkStats, err := w.Walk(fn)
@@ -245,13 +256,16 @@ func run(args []string, stdout io.Writer) error {
 
 	if *statsFlag {
 		out.Stats = &trawl.AnalysisStats{
-			PackagesLoaded: loadResult.PackagesLoaded,
-			CallGraphNodes: len(graph.Nodes),
-			CallGraphEdges: countGraphEdges(graph),
-			NodesVisited:   walkStats.NodesVisited,
-			EdgesExamined:  walkStats.EdgesExamined,
-			LoadDurationMs: loadDuration.Milliseconds(),
-			WalkDurationMs: walkDuration.Milliseconds(),
+			PackagesLoaded:     loadResult.PackagesLoaded,
+			PackagesAnalyzed:   loadResult.PackagesAnalyzed,
+			DependencyPackages: len(loadResult.DependencyPkgs),
+			CallGraphNodes:     len(graph.Nodes),
+			CallGraphEdges:     countGraphEdges(graph),
+			NodesVisited:       walkStats.NodesVisited,
+			EdgesExamined:      walkStats.EdgesExamined,
+			UnresolvedInvokes:  walkStats.UnresolvedInvokes,
+			LoadDurationMs:     loadDuration.Milliseconds(),
+			WalkDurationMs:     walkDuration.Milliseconds(),
 		}
 	}
 

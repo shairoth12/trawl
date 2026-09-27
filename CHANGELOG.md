@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--deps auto|none` flag (default `auto`): SSA function bodies are built for
+  same-module packages and for dependency packages that implement interfaces the
+  analyzed code invokes (≤3 selection rounds, ≤200 packages, never stdlib or
+  indicator packages)
+- `resolved_via: cross_module_trace` — a dependency body walked to a backend
+  call, attributed to the module-side call site
+- `resolved_via: interface_dispatch` — interface calls with no concrete callee,
+  classified by the interface's declaring package (high when it is an
+  indicator, low when inferred from imports)
+- Stats fields `packages_analyzed`, `dependency_packages`, `unresolved_invokes`
+- Two-module fixture `testdata/crossmodule` (analyzed module + dependency module)
+
+### Changed
+
+- Records describing one call site (same service type, same position) are
+  merged; higher confidence wins, ties keep the interface label
+- Generic top-level callee edges are no longer dropped (package recovered via
+  `Origin()`); external generic implementors report the concrete SSA name
+- `io.ReadCloser`, `io.WriteCloser`, `io.ReadWriteCloser` join the ubiquitous
+  interface filter
+- `analysis.Load` takes an `Options` struct; `walker.New` takes `walker.Options`
+
+### Fixed
+
+- Interface calls whose implementation lives in a dependency module resolve
+  without adding the dependency to `--scope`
+- SSA build panics in dependency packages surface as errors instead of crashing
+
 ## [0.2.0] - 2026-04-10
 
 ### Added

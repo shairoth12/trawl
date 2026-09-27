@@ -29,3 +29,5 @@ Thumbs.db
 .claude/cc10x/
 # TODO - remove this in the future
 .claude/
+
+example-services/

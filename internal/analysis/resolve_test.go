@@ -11,7 +11,7 @@ func TestResolve(t *testing.T) {
 	t.Parallel()
 
 	root := moduleRoot(t)
-	result, err := analysis.Load(t.Context(), root, "./testdata/resolve", analysis.AlgoVTA)
+	result, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: "./testdata/resolve", Algo: analysis.AlgoVTA})
 	if err != nil {
 		t.Fatalf("Load(./testdata/resolve): %v", err)
 	}

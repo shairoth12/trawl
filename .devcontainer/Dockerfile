@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/go:1-bookworm
+FROM mcr.microsoft.com/devcontainers/go:1.26-bookworm
 
 # Docker creates named volume mount points as root:root. Pre-create all volume
 # targets here so the vscode user owns them before any container process runs.

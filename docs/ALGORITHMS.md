@@ -97,6 +97,8 @@ cha.CallGraph(prog) → graph  (used directly, no VTA refinement)
 - When you want the broadest possible coverage
 - When `--algo vta` misses calls because concrete types aren't visibly wired
 
+**Precondition**: CHA only considers concrete types that are *runtime types* of the program — some **built** function body must convert the type to an interface (`MakeInterface`): a constructor returning the interface, or `var _ I = (*T)(nil)`. A dependency whose constructor returns the concrete type and is bound to the interface only through reflection degrades to an `interface_dispatch` record.
+
 **Trade-off**: Over-approximates. CHA reports `Store.Get` being dispatched to `MockStore.Get` even if `MockStore` is never used at runtime. trawl mitigates this with filters:
 
 ### CHA False-Positive Filters
@@ -112,9 +114,22 @@ Interface method labeling   │ Shows Store.Get not MockStore.Get       │ inte
 Cross-module inference      │ Wrapper pkgs (rediscache → go-redis)    │ 2-level import scan
 ```
 
+## Dependency Bodies (`--deps`)
+
+By default (`--deps auto`) trawl builds SSA function bodies not only for `--pkg` and `--scope` packages but also for:
+
+- every other package of the analyzed module that the target imports, and
+- dependency packages that declare a concrete, non-mock implementor of an interface the analyzed code invokes — selected in up to 3 rounds (so a facade's own interface dependencies resolve too), capped at 200 packages, never stdlib or indicator-matching packages.
+
+The walker recurses into those bodies and reports what it finds at the module-side call site (`resolved_via: cross_module_trace`). Interfaces implemented in a dependency module therefore resolve **without** adding the dependency to `--scope`. `--deps none` restores body construction for the initial packages only.
+
+Interface calls that still have no concrete callee are reported as `interface_dispatch` records (high confidence when the interface is declared in an indicator package, low when inferred from that package's imports) and counted in `stats.unresolved_invokes`. VTA and RTA still cannot resolve reflection-based DI, but they now yield these hints instead of silence.
+
+**Limitations**: selection stops after three rounds — deeper interface chains inside dependencies end in `interface_dispatch` evidence. Static (non-interface) calls into body-less, non-indicator external packages are still skipped without inference. `nodes_visited` counts dependency-node entries once per crossing.
+
 ## `--scope` Flag
 
-`--scope` loads additional packages into the SSA program to enrich the type universe. The primary package (`--pkg`) remains the analysis target.
+`--scope` loads additional packages *as initial packages* to enrich the type universe. The primary package (`--pkg`) remains the analysis target. Since same-module packages imported by the target and implementor dependency packages are built automatically, `--scope` is needed for **wiring** packages the target does not import (e.g. `cmd/server` wiring a constructor-injected handler).
 
 ```
 Without scope:    packages.Load("./internal/handler")

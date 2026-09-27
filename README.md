@@ -92,6 +92,7 @@ trawl --pkg <pattern> --entry <name> [flags]
 | `--config` | _(none)_ | Path to YAML config file for custom service indicators |
 | `--algo` | `vta` | Call graph algorithm: `vta`, `rta`, or `cha` |
 | `--scope` | _(none)_ | Extra package patterns for type visibility (comma-separated) |
+| `--deps` | `auto` | Dependency bodies: `auto` builds SSA for same-module packages and for dependency packages implementing interfaces the analyzed code invokes (≤200 packages, ≤3 rounds); `none` builds only the initial packages |
 | `--dedup` | _(off)_ | Deduplicate by `(service_type, import_path, function)`, shortest chain wins |
 | `--stats` | _(off)_ | Append analysis diagnostics to JSON output (package count, call graph size, DFS counters, phase durations) |
 | `--timeout` | `10m` | Maximum analysis duration; `0` disables |
@@ -161,8 +162,10 @@ trawl --pkg ./cmd/server --entry HandleRequest --log-format json --log-file traw
 Stage 1: go/packages.Load()
          Load target package (+ scope packages) into typed AST
               │
-Stage 2: ssautil.Packages() + prog.Build()
-         Convert to SSA intermediate representation
+Stage 2: Build SSA (bodies for --pkg + --scope packages,
+         + same-module packages, + dependency packages implementing
+         invoked interfaces — ≤200 packages, ≤3 selection rounds;
+         --deps none restricts bodies to the initial packages)
               │
 Stage 3: Construct call graph
          ├─ VTA: CHA seed → vta.CallGraph (default, most precise)
@@ -177,8 +180,13 @@ Stage 5: DFS Walker
          ┌─ Detector match? → emit ExternalCall (direct, high)
          ├─ Mock type? → infer from imports or skip
          ├─ Ubiquitous interface? (error, io.Reader) → skip
+         ├─ Built dependency body? → walk it; attribute findings to
+         │  the module-side call site (cross_module_trace)
          ├─ Outside module? → infer from transitive imports or stop
          └─ Inside module? → recurse
+         Interface calls with no concrete callee → interface_dispatch
+         record classified by the interface's package
+         Records for one call site are merged (highest confidence wins)
               │
 Stage 6: Post-process
          ├─ Relativize file paths
@@ -197,7 +205,7 @@ Stage 7: JSON → stdout
 | **CHA** | Low (with filters) | Fastest | By structural type match | Yes |
 
 **Use VTA** when concrete types are wired through visible constructors.
-**Use CHA + `--scope ./...`** when using reflection-based DI (dig, fx, wire).
+**Use CHA** when using reflection-based DI (dig, fx, wire). Add `--scope` only for wiring packages the target does not import.
 
 See [docs/ALGORITHMS.md](docs/ALGORITHMS.md) for the full decision guide.
 
@@ -250,21 +258,24 @@ When `--stats` is passed, a `stats` object is appended with diagnostic measureme
 ```json
 "stats": {
   "packages_loaded": 1911,
+  "packages_analyzed": 14,
+  "dependency_packages": 12,
   "call_graph_nodes": 64320,
   "call_graph_edges": 26548,
   "nodes_visited": 60,
   "edges_examined": 430,
+  "unresolved_invokes": 1,
   "load_duration_ms": 2177,
   "walk_duration_ms": 0
 }
 ```
 
-`packages_loaded` and `load_duration_ms` are the primary signals for slow analyses. `load_duration_ms` covers package load + SSA + call graph construction for all algorithms (including RTA). `nodes_visited` vs `call_graph_nodes` shows what fraction of the graph the DFS actually traversed. `walk_duration_ms` is sub-millisecond for most analyses (reported as `0`).
+`packages_loaded` and `load_duration_ms` are the primary signals for slow analyses. `load_duration_ms` covers package load + SSA + call graph construction for all algorithms (including RTA). `nodes_visited` vs `call_graph_nodes` shows what fraction of the graph the DFS actually traversed. `dependency_packages` lists how many non-initial packages received function bodies; a non-zero `unresolved_invokes` means an interface call had no concrete implementor in the program. `walk_duration_ms` is sub-millisecond for most analyses (reported as `0`).
 
 Each call includes:
 - `service_type`, `import_path`, `function`, `file`, `line`
 - `call_chain` — ordered path from entry to call site
-- `resolved_via` — `"direct"`, `"mock_inference"`, or `"cross_module_inference"`
+- `resolved_via` — `"direct"`, `"mock_inference"`, `"cross_module_inference"`, `"cross_module_trace"`, or `"interface_dispatch"`
 - `confidence` — `"high"`, `"medium"`, or `"low"`
 - `short_function`, `short_call_chain` — paths and generics stripped
 
@@ -272,15 +283,25 @@ See [docs/OUTPUT-FORMAT.md](docs/OUTPUT-FORMAT.md) for the full schema reference
 
 ## Dependency Injection
 
-When analyzing leaf packages whose interfaces are implemented elsewhere:
+Interfaces whose concrete implementation lives in a **dependency module** resolve
+without extra flags: trawl builds bodies for dependency packages that implement
+an interface the analyzed code invokes, walks them, and reports the backend at
+the module-side call site (`resolved_via: cross_module_trace`). Same-module
+packages imported by the target are built automatically too.
+
+`--scope` is still needed for **wiring** packages the target does not import
+(constructor DI in `cmd/server`):
 
 ```bash
 # Manual DI (constructor injection) — VTA traces value flow
 trawl --pkg ./internal/handler --entry Handle --scope ./cmd/server --algo vta
 
 # Reflection-based DI (dig, fx) — CHA resolves by type structure
-trawl --pkg ./internal/handler --entry Handle --scope ./... --algo cha
+trawl --pkg ./internal/handler --entry Handle --algo cha
 ```
+
+When no implementor is visible at all, the call is still reported as an
+`interface_dispatch` record classified by the interface's declaring package.
 
 ## Documentation
 

@@ -80,6 +80,12 @@ Example ordering:
 
 Both entries produce `resolved_via: "direct"` and `confidence: "high"` matches.
 
+## Indicators and Dependency Bodies
+
+Packages matching an indicator are **never** selected for dependency function bodies (`--deps auto`): the walker records and stops at them anyway. An interface *declared* in an indicator package classifies its calls with high confidence even when no implementor is visible (`resolved_via: interface_dispatch`), so `wrapper_for` is unnecessary for interface-fronted wrappers.
+
+Do **not** use a global indicator or `wrapper_for` for a composite facade (one package wrapping several backends): per-method classification comes from walking the facade's body, and an indicator would label every method with one service type.
+
 ## Validation
 
 `Config.Validate()` runs automatically during `LoadConfig()`. It rejects:
