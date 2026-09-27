@@ -40,9 +40,19 @@ jobs:
         with:
           version: ${{ steps.latest.outputs.version }}
 
+      - name: Require CI-triggering token
+        env:
+          UPDATE_TOKEN: ${{ secrets.GOLANGCI_LINT_UPDATE_TOKEN }}
+        run: |
+          if [[ -z "$UPDATE_TOKEN" ]]; then
+            echo "::error::GOLANGCI_LINT_UPDATE_TOKEN repository secret is required"
+            exit 1
+          fi
+
       - name: Create update pull request
         uses: peter-evans/create-pull-request@v7
         with:
+          token: ${{ secrets.GOLANGCI_LINT_UPDATE_TOKEN }}
           commit-message: "chore(deps): update golangci-lint"
           branch: chore/update-golangci-lint
           delete-branch: true

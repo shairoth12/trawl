@@ -32,7 +32,12 @@ jobs:
 
       - name: Check devcontainer Go >= go.mod
         run: |
-          mod=$(awk '$1 == "go" { print $2 }' go.mod | cut -d. -f1,2)
+          mapfile -t mod_versions < <(awk '$1 == "go" { print $2 }' go.mod)
+          if [[ "${#mod_versions[@]}" -ne 1 || ! "${mod_versions[0]}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error file=go.mod::go.mod must contain exactly one valid numeric go directive"
+            exit 1
+          fi
+          mod=$(printf '%s\n' "${mod_versions[0]}" | cut -d. -f1,2)
           img=$(sed -nE 's#^FROM mcr\.microsoft\.com/devcontainers/go:([0-9]+\.[0-9]+).*#\1#p' .devcontainer/Dockerfile)
           if [[ -z "$img" ]]; then
             echo "::error file=.devcontainer/Dockerfile::base image must pin a Go minor version (e.g. go:${mod}-bookworm)"
