@@ -31,10 +31,13 @@ Present in the top-level output only when `--stats` is passed.
 ```json
 {
   "packages_loaded": 1911,
+  "packages_analyzed": 14,
+  "dependency_packages": 12,
   "call_graph_nodes": 64320,
   "call_graph_edges": 26548,
   "nodes_visited": 60,
   "edges_examined": 430,
+  "unresolved_invokes": 1,
   "load_duration_ms": 2177,
   "walk_duration_ms": 0
 }
@@ -43,11 +46,14 @@ Present in the top-level output only when `--stats` is passed.
 ```
 Field             │ Type    │ Description
 ──────────────────┼─────────┼───────────────────────────────────────────────────────────────────
-packages_loaded   │ integer │ Total packages transitively loaded by the go toolchain (packages.Visit count)
-call_graph_nodes  │ integer │ Total functions (nodes) in the constructed call graph
-call_graph_edges  │ integer │ Total call sites (edges) across all nodes in the call graph
-nodes_visited     │ integer │ Unique call graph nodes entered during the DFS walk
-edges_examined    │ integer │ Total outgoing edges considered during DFS (including skipped)
+packages_loaded     │ integer │ Total packages transitively loaded by the go toolchain (packages.Visit count)
+packages_analyzed   │ integer │ Packages whose function bodies were built (--pkg/--scope packages + dependency_packages)
+dependency_packages │ integer │ Extra packages trawl chose to build bodies for: other packages of your module, and dependency packages implementing an interface your code calls
+call_graph_nodes    │ integer │ Total functions (nodes) in the constructed call graph
+call_graph_edges    │ integer │ Total call sites (edges) across all nodes in the call graph
+nodes_visited       │ integer │ Functions entered during the walk; a dependency function is counted again each time it is reached from a different call in your code
+edges_examined      │ integer │ Total outgoing edges considered during DFS (including skipped)
+unresolved_invokes  │ integer │ Interface calls that resolved to no implementation, or only to mocks (standard-library and very common interfaces are not counted)
 load_duration_ms  │ integer │ Wall-clock milliseconds from package load start through call graph construction (all algorithms)
 walk_duration_ms  │ integer │ Wall-clock milliseconds spent in the DFS walk; typically 0 for most analyses
 ```
@@ -59,6 +65,7 @@ walk_duration_ms  │ integer │ Wall-clock milliseconds spent in the DFS walk;
 - `nodes_visited / call_graph_nodes` shows coverage: for a deep entry point this ratio approaches 1; for a shallow handler it is typically < 1%.
 - `walk_duration_ms` reports 0 for most analyses because the DFS completes in sub-millisecond time. This is expected and correct.
 - `call_graph_edges` counts all edges in the full graph (constructed once). `edges_examined` counts only edges actually traversed from the given entry point.
+- `unresolved_invokes > 0` means some interface call could not be resolved to a real implementation. `dependency_packages` shows how many extra packages trawl built to try; compare with `--deps none` to see what they contributed.
 
 ## ExternalCall Object
 
@@ -105,7 +112,27 @@ mock_inference             │ Mock type detected; service type inferred from   
                            │ the mock's package imports                       │
 cross_module_inference     │ External module; service type inferred from      │ low
                            │ 2-level transitive imports                       │
+cross_module_trace         │ trawl followed the call into a dependency and    │ high (low if the backend
+                           │ found a backend call; reported at your call      │ inside was itself guessed)
+interface_dispatch         │ Interface call with no known implementation;     │ high when the interface's
+                           │ classified by the package declaring the interface│ package is an indicator,
+                           │                                                  │ low when guessed from imports
 ```
+
+For `cross_module_trace` records, `file`/`line`/`function`/`import_path` describe **your call** that led into the dependency, while `call_chain` continues into the dependency down to the backend call:
+
+```json
+{
+  "service_type": "POSTGRES",
+  "resolved_via": "cross_module_trace",
+  "confidence": "high",
+  "file": "handler.go", "line": 12,                          ← your call: h.store.Get(ctx, key)
+  "function": "(*example.com/lib/store.sqlStore).Get",       ← the dependency method it entered
+  "call_chain": ["svc.HandleGet", "(*store.sqlStore).Get", "(*database/sql.DB).QueryRowContext"]
+}
+```
+
+When confidence is `low` (`interface_dispatch`, `cross_module_inference`, or a `cross_module_trace` whose inner hit was itself guessed), `service_type` comes from the **first** recognised import of the package that declares the interface. For a facade wrapping several backends it may name the wrong one — read a `low` record as "some external call here", not as the service identity. With `--deps auto` and a visible implementor the record is `high` and classified per method.
 
 ### `confidence`
 
@@ -154,6 +181,22 @@ HandleRequest                                   │ HandleRequest
 Algorithm:
 1. Strip generic type parameters: remove all `[...]` blocks (handles nesting)
 2. Strip import path prefix: find last `/`, find first `.` after it, drop everything between
+
+## Merging (always on)
+
+Merging is not a flag; it runs on every analysis. When trawl finds several hits for the
+same line of your code with the same service type, it keeps one record. This happens
+independently of `--dedup`, which is optional and runs afterwards on the merged result.
+
+```
+Merge key: (service_type, call-site position)
+
+Higher confidence wins; on a tie the interface name ("Store.Get") beats a
+concrete method name ("(*sqlStore).Get"); otherwise the first hit wins.
+Hits without a source position are never merged.
+```
+
+This removes the concrete/mock duplicate CHA produces when a dependency package holds both the real implementation and a generated mock.
 
 ## Deduplication (`--dedup`)
 

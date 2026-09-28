@@ -34,9 +34,19 @@ go.etcd.io/etcd/client
 ```
 
 A config file is needed when the codebase:
-- Uses **internal wrapper libraries** around any of the above (e.g. `internal/cache` wrapping go-redis)
 - Uses **external services not in the built-in list** (Kafka, MySQL, DynamoDB, NATS, S3, etc.)
 - Uses a built-in library for a **different service type** (e.g. `database/sql` connecting to MySQL, not Postgres)
+- Uses a **wrapper library whose implementation trawl cannot see**: the wrapper exposes an
+  interface and the concrete type is bound by reflection (dig, fx, wire) or lives in a
+  package trawl did not load
+
+Wrappers trawl **can** see resolve on their own: trawl builds the bodies of same-module
+packages and of dependency packages that implement an interface your code calls, walks
+into them, and reports the real backend (`resolved_via: cross_module_trace`, `high`).
+So for `internal/cache` wrapping go-redis, no config entry is needed — trawl follows
+`cache.Get` into go-redis by itself. An entry still helps when you want a custom label
+(`service_type: "SESSION_CACHE"` instead of `REDIS`) or when the walk cannot reach the
+implementation.
 
 If none of these apply, skip this skill and run trawl directly.
 
@@ -111,6 +121,25 @@ grep -n "^func\|^type\|^var" internal/cache/*.go
 ```
 
 If the package's exported API abstracts the external library behind an interface or thin struct, it's a wrapper.
+
+**Then check: one backend or several?** Count the external service libraries the wrapper
+imports (Step 2 results). An indicator gives *every* method of the package one service
+type, so it is only correct when the package wraps one backend.
+
+```go
+// one backend → OK to add as an indicator (REDIS)
+package cache
+func (c *Cache) Get(...)  { c.redis.Get(...) }
+func (c *Cache) Set(...)  { c.redis.Set(...) }
+
+// several backends → do NOT add; let trawl walk into each method
+package store
+func (s *Store) Get(...)   { s.db.QueryRowContext(...) }   // database/sql → POSTGRES
+func (s *Store) Fetch(...) { s.http.Do(...) }              // net/http     → HTTP
+```
+
+With an indicator on `store`, `h.store.Fetch(...)` would be reported as POSTGRES. Without
+one, trawl reports `Get` as POSTGRES and `Fetch` as HTTP.
 
 ---
 
@@ -220,3 +249,5 @@ then proceed with the trawl skill.
 - **Don't add every internal package.** Only add packages that other code goes through to reach an external service. Direct callers (cmd/, main packages) are not wrappers.
 - **Don't add test doubles.** Mock implementations (`MockStore`, `FakeClient`) are intentionally filtered by trawl — don't add them as indicators.
 - **Don't over-specify `wrapper_for`.** List only the external libraries the wrapper directly imports, not transitive dependencies.
+- **Don't add a wrapper that fronts several backends.** One package with a Postgres method and an HTTP method must stay out of the config; an indicator would label both methods the same. trawl classifies each method by walking into it (see Step 3).
+- **Don't add a wrapper just because it exists.** If trawl can reach the wrapper's implementation (same module, or a dependency implementing an interface your code calls), it already reports the real backend without config. Add an entry for a custom label or when the implementation is bound by reflection.
