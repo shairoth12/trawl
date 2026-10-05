@@ -91,7 +91,7 @@ Stage 6: DFS Walk
     │    │
     │    ├─ Very common interface? (error, io.Reader, ...) → skip
     │    │
-    │    ├─ Mock type method? (type name starts with "Mock")
+    │    ├─ Mock method? (struct with a mock.Mock or *gomock.Controller field)
     │    │    real implementation reachable
     │    │    (same module, a dependency with bodies, or already inside one) → skip
     │    │    otherwise → guess the service from the mock package's imports
@@ -147,8 +147,8 @@ github.com/shairoth12/trawl/
 ├── internal/
 │   ├── analysis/
 │   │   ├── analysis.go   Load(ctx, Options): go/packages → SSA → call graph
-│   │   │                 Options{Dir, Pattern, Algo, Scope, Deps, MaxDependencyPkgs, IsIndicator}
-│   │   │                 Algo type: "vta" | "rta" | "cha"; DepPolicy: "auto" | "none"
+│   │   │                 Options{Dir, Pattern, Algo, Scope, DependencyPolicy, MaxDependencyPkgs, IsIndicator}
+│   │   │                 Algo type: "vta" | "rta" | "cha"; DependencyPolicy: "auto" | "none"
 │   │   │                 createProgram(): ssautil.Packages clone with a wider "with bodies" set
 │   │   │                 buildProgram(): per-package Build in bounded goroutines, panic → error
 │   │   │                 ErrPackageLoad sentinel
@@ -162,7 +162,7 @@ github.com/shairoth12/trawl/
 │   │   │
 │   │   └── resolve.go    Resolve(): entry string → *ssa.Function
 │   │                     3 formats: FuncName, Type.Method, BareMethod
-│   │                     Mock types (name starts "Mock") skipped in bare resolution
+│   │                     Mocks (mock.Mock / *gomock.Controller field) skipped in bare resolution
 │   │
 │   ├── detector/
 │   │   ├── detector.go   Detector interface: Detect(importPath) → (ServiceType, bool)
@@ -193,13 +193,15 @@ github.com/shairoth12/trawl/
 │   ├── resolve/          Entry resolution edge cases
 │   ├── erriface/         Ubiquitous dispatch filtering
 │   ├── mockfilter/       Mock type filtering
+│   ├── mock/, gomock/    Stand-ins for testify mock.Mock and gomock.Controller
+│   ├── crossmodule/      Two modules: svc (analyzed) + lib (dependency)
 │   ├── generic/          Generic type instantiation
 │   ├── scope/            VTA/CHA scope resolution (leaf + wiring)
 │   └── config/           YAML config fixtures
 │
-├── integration_test.go   13 end-to-end tests (full pipeline)
+├── integration_test.go   15 end-to-end tests (full pipeline)
 ├── trawl_test.go         Unit tests for root package types
-├── go.mod                Module: github.com/shairoth12/trawl, Go 1.25
+├── go.mod                Module: github.com/shairoth12/trawl, Go 1.26
 ├── .golangci.yml         Linter config (v2 format)
 ├── .goreleaser.yaml      Cross-platform release builds
 └── Makefile              build, test, lint, clean, release-dry-run
@@ -256,7 +258,7 @@ Options {
     Dir, Pattern      string
     Algo              Algo                   // "vta" | "rta" | "cha"
     Scope             []string
-    Deps              DepPolicy              // "auto" (default) | "none"
+    DependencyPolicy  DependencyPolicy       // "auto" (default) | "none"
     MaxDependencyPkgs int                    // 0 → 200
     IsIndicator       func(string) bool      // indicator packages never get bodies
 }
@@ -280,7 +282,7 @@ entered the dependency. The distinct sources:
 ```
 Site │ When                                                        │ resolved_via            │ confidence
 ─────┼─────────────────────────────────────────────────────────────┼─────────────────────────┼───────────
- M   │ interface call resolved to a Mock* type in an external      │ mock_inference          │ medium
+ M   │ interface call resolved to a mock type in an external       │ mock_inference          │ medium
      │ package without bodies                                      │ (direct if pkg is an    │ (high)
      │                                                             │  indicator)             │
  D   │ callee's package is an indicator (your code)                │ direct                  │ high

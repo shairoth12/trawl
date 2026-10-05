@@ -10,7 +10,7 @@ description: >
   map from any Go function. Invoke proactively when the user asks about Go service
   dependencies, external calls, mocking strategy, or what services a Go component
   depends on.
-compatibility: Requires trawl CLI (go install github.com/shairoth12/trawl/cmd/trawl@latest) and Go 1.25+. Target package must compile and have dependencies available.
+compatibility: Requires trawl CLI (go install github.com/shairoth12/trawl/cmd/trawl@latest) and Go 1.26+ (Go 1.21+ downloads it automatically during install). Target package must compile and have dependencies available.
 metadata:
   author: shairoth12
   version: 1.1.0
@@ -297,8 +297,9 @@ When results seem incomplete, try in this order:
 ## Troubleshooting
 
 **`warning: trawl was built with goX.Y but host toolchain is goZ.W`**
-Toolchain mismatch — output may be empty or wrong.
-Fix: `go install github.com/shairoth12/trawl/cmd/trawl@latest`
+The `go` on PATH is a newer Go release than the one trawl was built with, so loading may fail or the output may be
+empty. (An older `go` on PATH is fine and gives no warning.)
+Fix: rebuild trawl with that newer `go`: `go install github.com/shairoth12/trawl/cmd/trawl@latest`
 
 **`resolving entry point "Foo": function not found`**
 Entry point name doesn't match any function in the package.

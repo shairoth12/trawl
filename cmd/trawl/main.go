@@ -3,7 +3,7 @@
 //
 // Usage:
 //
-//	trawl --pkg <package_pattern> --entry <function_name> [--config <yaml>] [--algo vta|rta]
+//	trawl --pkg <package_pattern> --entry <function_name> [--config <yaml>] [--algo vta|rta|cha] [--deps auto|none]
 package main
 
 import (
@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	goversion "go/version"
 	"io"
 	"log/slog"
 	"os"
@@ -49,26 +50,27 @@ func versionInfo() string {
 		version, commit, date, runtime.Version())
 }
 
-// toolchainWarning returns a non-empty warning string when the binary's
-// compile-time Go version differs from the active host toolchain version.
-// hostGoVersion should be the bare version string returned by "go env GOVERSION"
-// (e.g. "go1.25.0"). Returns an empty string when the versions match or when
-// hostGoVersion is empty (best-effort check, no hard failure).
+// toolchainWarning returns a non-empty warning string when the host toolchain
+// is a newer Go release (major.minor) than the one trawl was built with.
+// hostGoVersion should be the bare version string returned by "go env
+// GOVERSION" (e.g. "go1.26.0"). Returns an empty string when the host is the
+// same release or older, or when either version cannot be parsed (best-effort
+// check, no hard failure).
 //
-// trawl shells out to the host "go" command via go/packages; a mismatch can
-// cause cryptic load errors, so surfacing it early helps users self-diagnose.
+// trawl type-checks the host's standard library source with the go/types
+// built into the binary. A newer standard library may use language features
+// that go/types does not know yet, which causes cryptic load errors. An older
+// host is fine, and patch releases never change the language.
 func toolchainWarning(hostGoVersion string) string {
-	if hostGoVersion == "" {
-		return ""
-	}
 	built := runtime.Version()
-	if built == hostGoVersion {
+	host, builtLang := goversion.Lang(hostGoVersion), goversion.Lang(built)
+	if host == "" || builtLang == "" || goversion.Compare(host, builtLang) <= 0 {
 		return ""
 	}
 	return fmt.Sprintf(
 		"warning: trawl was built with %s but host toolchain is %s\n"+
-			"         consider: go install github.com/shairoth12/trawl/cmd/trawl@latest",
-		built, hostGoVersion,
+			"         rebuild trawl with %s: go install github.com/shairoth12/trawl/cmd/trawl@latest",
+		built, hostGoVersion, hostGoVersion,
 	)
 }
 
@@ -95,7 +97,7 @@ func run(args []string, stdout io.Writer) error {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
 		w := fs.Output()
-		_, _ = fmt.Fprintln(w, "Usage: trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>]")
+		_, _ = fmt.Fprintln(w, "Usage: trawl --pkg <pattern> --entry <name> [--config <yaml>] [--algo vta|rta|cha] [--scope <patterns>] [--deps auto|none]")
 		_, _ = fmt.Fprintln(w)
 		_, _ = fmt.Fprintln(w, "Flags:")
 		fs.PrintDefaults()
@@ -107,6 +109,7 @@ func run(args []string, stdout io.Writer) error {
 	configPath := fs.String("config", "", "Path to YAML config file for custom indicators")
 	algoStr := fs.String("algo", string(analysis.AlgoVTA), "Call graph algorithm: vta (default), rta, or cha")
 	scope := fs.String("scope", "", "Extra package patterns for type visibility (comma-separated)")
+	depsStr := fs.String("deps", string(analysis.DependencyAuto), "Dependency bodies: auto (build SSA for same-module packages and for dependency packages implementing interfaces the analyzed code invokes) or none")
 	dedupFlag := fs.Bool("dedup", false, "Deduplicate results by (service_type, import_path, function), keeping shortest call chain")
 	statsFlag := fs.Bool("stats", false, "Include analysis statistics in JSON output (packages loaded, call graph size, DFS counters, phase durations)")
 	timeoutStr := fs.String("timeout", "10m", "Maximum duration for the analysis (e.g. 30s, 5m, 1h); 0 means no timeout")
@@ -169,20 +172,31 @@ func run(args []string, stdout io.Writer) error {
 	algo := analysis.Algo(*algoStr)
 	var scopePatterns []string
 	if *scope != "" {
-		for _, s := range strings.Split(*scope, ",") {
+		for s := range strings.SplitSeq(*scope, ",") {
 			if s = strings.TrimSpace(s); s != "" {
 				scopePatterns = append(scopePatterns, s)
 			}
 		}
 	}
 
-	log.Info("loading_packages", "pkg", *pkg, "algo", *algoStr)
+	det := detector.New(cfg.Indicators)
+
+	log.Info("loading_packages", "pkg", *pkg, "algo", *algoStr, "deps", *depsStr)
 	t0 := time.Now()
-	loadResult, err := analysis.Load(ctx, dir, *pkg, algo, scopePatterns...)
+	loadResult, err := analysis.Load(ctx, analysis.Options{
+		Dir: dir, Pattern: *pkg, Algo: algo, Scope: scopePatterns,
+		DependencyPolicy: analysis.DependencyPolicy(*depsStr),
+		IsIndicator:      func(p string) bool { _, ok := det.Detect(p); return ok },
+	})
 	if err != nil {
 		return fmt.Errorf("loading package %q: %w", *pkg, err)
 	}
 	log.Info("packages_loaded", "pkg", *pkg, "elapsed", time.Since(t0).String())
+	log.Info("dependency_bodies", "count", len(loadResult.DependencyPkgs))
+	log.Debug("dependency_bodies_list", "pkgs", loadResult.DependencyPkgs)
+	if n := loadResult.DependencyPkgsSkipped; n > 0 {
+		log.Warn("dependency_bodies_truncated", "skipped", n, "limit", analysis.DefaultMaxDependencyPkgs)
+	}
 
 	log.Info("resolving_entry", "entry", *entry)
 	fn, err := analysis.Resolve(loadResult, *entry)
@@ -202,8 +216,7 @@ func run(args []string, stdout io.Writer) error {
 	// both phases complete.
 	loadDuration := time.Since(t0)
 
-	det := detector.New(cfg.Indicators)
-	w := walker.New(graph, det, loadResult.Module, loadResult.Prog.Fset, log)
+	w := walker.New(graph, det, walker.Options{Module: loadResult.Module, DependencyPkgs: loadResult.DependencyPkgs, Fset: loadResult.Prog.Fset, Log: log})
 	log.Info("walking_graph", "entry", fn.String())
 	t1 := time.Now()
 	calls, walkStats, err := w.Walk(fn)
@@ -245,13 +258,16 @@ func run(args []string, stdout io.Writer) error {
 
 	if *statsFlag {
 		out.Stats = &trawl.AnalysisStats{
-			PackagesLoaded: loadResult.PackagesLoaded,
-			CallGraphNodes: len(graph.Nodes),
-			CallGraphEdges: countGraphEdges(graph),
-			NodesVisited:   walkStats.NodesVisited,
-			EdgesExamined:  walkStats.EdgesExamined,
-			LoadDurationMs: loadDuration.Milliseconds(),
-			WalkDurationMs: walkDuration.Milliseconds(),
+			PackagesLoaded:     loadResult.PackagesLoaded,
+			PackagesAnalyzed:   loadResult.PackagesAnalyzed,
+			DependencyPackages: len(loadResult.DependencyPkgs),
+			CallGraphNodes:     len(graph.Nodes),
+			CallGraphEdges:     countGraphEdges(graph),
+			NodesVisited:       walkStats.NodesVisited,
+			EdgesExamined:      walkStats.EdgesExamined,
+			UnresolvedInvokes:  walkStats.UnresolvedInvokes,
+			LoadDurationMs:     loadDuration.Milliseconds(),
+			WalkDurationMs:     walkDuration.Milliseconds(),
 		}
 	}
 

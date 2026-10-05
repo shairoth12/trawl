@@ -3,6 +3,7 @@
 package trawl
 
 import (
+	"go/types"
 	"strings"
 )
 
@@ -28,13 +29,16 @@ const (
 // All duration fields are wall-clock milliseconds measured during the run.
 // Stats is only populated when the --stats flag is provided.
 type AnalysisStats struct {
-	PackagesLoaded int   `json:"packages_loaded"`  // total packages loaded transitively
-	CallGraphNodes int   `json:"call_graph_nodes"` // total functions in the call graph
-	CallGraphEdges int   `json:"call_graph_edges"` // total call sites in the call graph
-	NodesVisited   int   `json:"nodes_visited"`    // unique functions entered during DFS
-	EdgesExamined  int   `json:"edges_examined"`   // total edges considered during DFS (including skipped)
-	LoadDurationMs int64 `json:"load_duration_ms"` // milliseconds spent loading packages
-	WalkDurationMs int64 `json:"walk_duration_ms"` // milliseconds spent walking the call graph
+	PackagesLoaded     int   `json:"packages_loaded"`     // total packages loaded transitively
+	PackagesAnalyzed   int   `json:"packages_analyzed"`   // packages whose function bodies were built
+	DependencyPackages int   `json:"dependency_packages"` // non-initial packages auto-selected for bodies
+	CallGraphNodes     int   `json:"call_graph_nodes"`    // total functions in the call graph
+	CallGraphEdges     int   `json:"call_graph_edges"`    // total call sites in the call graph
+	NodesVisited       int   `json:"nodes_visited"`       // functions entered during DFS
+	EdgesExamined      int   `json:"edges_examined"`      // total edges considered during DFS (including skipped)
+	UnresolvedInvokes  int   `json:"unresolved_invokes"`  // interface call sites with no concrete callee (stdlib/ubiquitous excluded)
+	LoadDurationMs     int64 `json:"load_duration_ms"`    // milliseconds spent loading packages
+	WalkDurationMs     int64 `json:"walk_duration_ms"`    // milliseconds spent walking the call graph
 }
 
 // Result holds the analysis output for a single entry point function.
@@ -63,7 +67,7 @@ type ExternalCall struct {
 	File           string      `json:"file"`             // source file containing the call site
 	Line           int         `json:"line"`             // line number of the call site
 	CallChain      []string    `json:"call_chain"`       // ordered function names from entry point to call site; never nil in valid results
-	ResolvedVia    string      `json:"resolved_via"`     // how the call was discovered: direct, mock_inference, cross_module_inference
+	ResolvedVia    string      `json:"resolved_via"`     // how the call was discovered: direct, mock_inference, cross_module_inference, cross_module_trace, interface_dispatch
 	Confidence     string      `json:"confidence"`       // reliability of the detection: high, medium, low
 	ShortFunction  string      `json:"short_function"`   // Function with module paths and generic type params stripped
 	ShortCallChain []string    `json:"short_call_chain"` // CallChain with module paths and generic type params stripped
@@ -74,6 +78,8 @@ const (
 	ResolvedViaDirect               = "direct"
 	ResolvedViaMockInference        = "mock_inference"
 	ResolvedViaCrossModuleInference = "cross_module_inference"
+	ResolvedViaCrossModuleTrace     = "cross_module_trace" // dependency body walked to a backend; attributed to the module-side call
+	ResolvedViaInterfaceDispatch    = "interface_dispatch" // interface call with no concrete callee, classified by the interface's package
 )
 
 // Confidence values indicate the reliability of a detection.
@@ -82,6 +88,50 @@ const (
 	ConfidenceMedium = "medium"
 	ConfidenceLow    = "low"
 )
+
+// IsStandardLibrary reports whether importPath belongs to the Go standard
+// library. Standard library paths have no dot in their first element
+// ("net/http", "fmt"); module paths do ("github.com/x/y").
+func IsStandardLibrary(importPath string) bool {
+	first, _, _ := strings.Cut(importPath, "/")
+	return !strings.Contains(first, ".")
+}
+
+// IsMock reports whether t (or the type t points to) is a generated mock: a
+// struct with a field of type mock.Mock (testify, mockery) or
+// *gomock.Controller (mockgen). The check uses package names, not import
+// paths, so forks of those libraries count too. The type's name is not
+// checked, so a real type named MockingbirdClient is not a mock, and a
+// hand-written mock without such a field is not a mock either.
+func IsMock(t types.Type) bool {
+	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	st, ok := t.Underlying().(*types.Struct)
+	if !ok {
+		return false
+	}
+	for field := range st.Fields() {
+		if isMockLibraryType(field.Type()) {
+			return true
+		}
+	}
+	return false
+}
+
+// isMockLibraryType reports whether t is mock.Mock or gomock.Controller,
+// directly or through a pointer.
+func isMockLibraryType(t types.Type) bool {
+	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return false
+	}
+	pkg, name := named.Obj().Pkg().Name(), named.Obj().Name()
+	return pkg == "mock" && name == "Mock" || pkg == "gomock" && name == "Controller"
+}
 
 // ShortenName strips module path prefixes and generic type parameters from
 // a fully-qualified Go SSA function name, producing a concise form suitable

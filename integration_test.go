@@ -30,8 +30,14 @@ func moduleRoot(t *testing.T) string {
 	return filepath.Dir(file)
 }
 
-// pipeline runs the full analysis pipeline for a fixture and returns the
-// trawl.Result. It fails the test immediately on any internal error.
+// crossmoduleSvcDir returns the root of the two-module fixture's service module.
+func crossmoduleSvcDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(moduleRoot(t), "testdata", "crossmodule", "svc")
+}
+
+// pipeline runs the full analysis pipeline for a fixture under the module
+// root and returns the trawl.Result.
 func pipeline(
 	t *testing.T,
 	pattern, entryName string,
@@ -40,11 +46,23 @@ func pipeline(
 	scope ...string,
 ) trawl.Result {
 	t.Helper()
-	root := moduleRoot(t)
+	return pipelineInDir(t, moduleRoot(t), pattern, entryName, indicators, algo, scope...)
+}
 
-	loadResult, err := analysis.Load(t.Context(), root, pattern, algo, scope...)
+// pipelineInDir runs pipelineOpts for a fixture that is its own Go module.
+func pipelineInDir(t *testing.T, dir, pattern, entryName string, indicators []trawl.Indicator, algo analysis.Algo, scope ...string) trawl.Result {
+	t.Helper()
+	return pipelineOpts(t, analysis.Options{Dir: dir, Pattern: pattern, Algo: algo, Scope: scope}, entryName, indicators)
+}
+
+// pipelineOpts runs the full analysis pipeline with explicit load options and
+// returns the trawl.Result. It fails the test immediately on any internal error.
+func pipelineOpts(t *testing.T, opts analysis.Options, entryName string, indicators []trawl.Indicator) trawl.Result {
+	t.Helper()
+
+	loadResult, err := analysis.Load(t.Context(), opts)
 	if err != nil {
-		t.Fatalf("analysis.Load(%q): %v", pattern, err)
+		t.Fatalf("analysis.Load(%q): %v", opts.Pattern, err)
 	}
 
 	fn, err := analysis.Resolve(loadResult, entryName)
@@ -53,13 +71,13 @@ func pipeline(
 	}
 
 	graph := loadResult.Graph
-	if algo == analysis.AlgoRTA {
+	if opts.Algo == analysis.AlgoRTA {
 		rtaResult := rta.Analyze([]*ssa.Function{fn}, true)
 		graph = rtaResult.CallGraph
 	}
 
 	det := detector.New(indicators)
-	w := walker.New(graph, det, loadResult.Module, loadResult.Prog.Fset, nil)
+	w := walker.New(graph, det, walker.Options{Module: loadResult.Module, DependencyPkgs: loadResult.DependencyPkgs, Fset: loadResult.Prog.Fset})
 	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entryName, err)
@@ -367,5 +385,43 @@ func TestIntegration_CHA_GenericInterface_DirectDetection(t *testing.T) {
 	}
 	if !foundPostgres {
 		t.Errorf("no POSTGRES call found in output: %v", out.ExternalCalls)
+	}
+}
+
+func TestIntegration_CrossModule_ScopedWithoutDeps_MergesInterfaceAndConcrete(t *testing.T) {
+	t.Parallel()
+	// With lib/store loaded as an initial package and no dependency bodies,
+	// CHA resolves Store.Get to both (*sqlStore).Get (import-inferred, low)
+	// and (*MockStore).Get (mock-inferred, medium) at one call site.
+	out := pipelineOpts(t, analysis.Options{
+		Dir: crossmoduleSvcDir(t), Pattern: ".", Algo: analysis.AlgoCHA,
+		Scope: []string{"example.com/lib/store"}, DependencyPolicy: analysis.DependencyNone,
+	}, "HandleGet", nil)
+	if len(out.ExternalCalls) != 1 {
+		t.Fatalf("external calls = %d, want 1 merged record: %+v", len(out.ExternalCalls), out.ExternalCalls)
+	}
+	got := out.ExternalCalls[0]
+	if got.Function != "example.com/lib/store.Store.Get" || got.Confidence != trawl.ConfidenceMedium || got.ResolvedVia != trawl.ResolvedViaMockInference {
+		t.Errorf("merged record = %+v, want interface label, medium, mock_inference", got)
+	}
+}
+
+func TestIntegration_CrossModule_CHA_OneRecordForSourceCall(t *testing.T) {
+	t.Parallel()
+	out := pipelineInDir(t, crossmoduleSvcDir(t), ".", "HandleGet", nil, analysis.AlgoCHA)
+	if len(out.ExternalCalls) != 1 {
+		t.Fatalf("external calls = %d, want 1: %+v", len(out.ExternalCalls), out.ExternalCalls)
+	}
+	got := out.ExternalCalls[0]
+	if got.ResolvedVia != trawl.ResolvedViaCrossModuleTrace || got.ServiceType != trawl.ServiceTypePostgres {
+		t.Errorf("record = %+v, want cross_module_trace/POSTGRES", got)
+	}
+	if !strings.HasSuffix(got.File, "svc.go") || got.ShortFunction != "(*sqlStore).Get" {
+		t.Errorf("file/short_function = %q/%q, want svc.go/(*sqlStore).Get", got.File, got.ShortFunction)
+	}
+	for _, name := range append([]string{got.Function}, got.CallChain...) {
+		if strings.Contains(name, "MockStore") {
+			t.Errorf("mock type name in output: %q", name)
+		}
 	}
 }

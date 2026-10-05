@@ -3,6 +3,8 @@
 // the ambiguity path in the resolve logic.
 package resolve
 
+import "github.com/shairoth12/trawl/testdata/mock"
+
 // HandleLogin is a top-level entry-point stub.
 func HandleLogin() {}
 
@@ -27,8 +29,8 @@ func (c Config) Handle() {}
 
 // MockHandler is a test double for Handler.
 // It deliberately shares method names with Handler to verify that bare-name
-// resolution ignores types prefixed with "Mock".
-type MockHandler struct{}
+// resolution ignores mocks (structs that embed mock.Mock).
+type MockHandler struct{ mock.Mock }
 
 // ServeHTTP satisfies the same interface as (*Handler).ServeHTTP.
 func (m *MockHandler) ServeHTTP() {}

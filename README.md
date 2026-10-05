@@ -14,7 +14,7 @@ trawl detects calls to [10 built-in service types](#built-in-indicators) — HTT
 
 ## Prerequisites
 
-- Go 1.25 or later
+- Go 1.26 or later to build trawl (with Go 1.21+, `go install` downloads 1.26 automatically)
 - Target package must be loadable by `go/packages` (must compile, dependencies available)
 - The Go version used to build trawl must be >= the Go version required by the target module
 

@@ -247,7 +247,7 @@ then proceed with the trawl skill.
 
 - **Don't duplicate built-ins.** If `github.com/redis/go-redis` is already built-in, don't re-add it — only add the wrapper that uses it.
 - **Don't add every internal package.** Only add packages that other code goes through to reach an external service. Direct callers (cmd/, main packages) are not wrappers.
-- **Don't add test doubles.** Mock implementations (`MockStore`, `FakeClient`) are intentionally filtered by trawl — don't add them as indicators.
+- **Don't add test doubles.** Generated mocks (structs with a testify `mock.Mock` or a `*gomock.Controller` field) are filtered by trawl — don't add them as indicators. Hand-written fakes are not filtered; don't add those either.
 - **Don't over-specify `wrapper_for`.** List only the external libraries the wrapper directly imports, not transitive dependencies.
 - **Don't add a wrapper that fronts several backends.** One package with a Postgres method and an HTTP method must stay out of the config; an indicator would label both methods the same. trawl classifies each method by walking into it (see Step 3).
 - **Don't add a wrapper just because it exists.** If trawl can reach the wrapper's implementation (same module, or a dependency implementing an interface your code calls), it already reports the real backend without config. Add an entry for a custom label or when the implementation is bound by reflection.

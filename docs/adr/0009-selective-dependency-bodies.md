@@ -10,7 +10,7 @@ status: accepted
 
 ## Decision
 
-`analysis.Load` builds bodies for the `--pkg`/`--scope` packages, plus every other package of the analyzed module, plus dependency packages that contain a concrete (non-`Mock*`) type implementing an interface the analyzed code calls. Selection works on type information only (`TypesInfo.Selections`), no SSA needed. It runs up to 3 rounds so that a facade which itself calls a second interface gets that implementation built too, and stops at 200 dependency-module packages. Standard-library packages and indicator packages are never selected.
+`analysis.Load` builds bodies for the `--pkg`/`--scope` packages, plus every other package of the analyzed module, plus dependency packages that contain a concrete type (not a mock, see `trawl.IsMock`) implementing an interface the analyzed code calls. Selection works on type information only (`TypesInfo.Selections`), no SSA needed. It runs up to 3 rounds so that a facade which itself calls a second interface gets that implementation built too, and stops at 200 dependency-module packages. Standard-library packages and indicator packages are never selected.
 
 ## Considered options
 

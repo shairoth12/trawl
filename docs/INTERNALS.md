@@ -14,13 +14,13 @@ Deep reference for each internal package. Read [ARCHITECTURE.md](ARCHITECTURE.md
 Stages:
 
 ```
-1. Validate opts.Deps ("" → auto; anything but auto/none → error)
+1. Validate opts.DependencyPolicy ("" → auto; anything but auto/none → error)
 2. loadPackages(): packages.Config with all NeedX modes, pattern + scope
    patterns in a single packages.Load call, package errors → ErrPackageLoad
    └─ Special case: toolchain version mismatch → descriptive error
 3. ctx.Err() check (cancellation gate)
 4. modulePathOf() — module of the primary package (falls back to first pkg with a Module)
-5. Deps == auto: selectDependencyPkgs() (deps.go)
+5. DependencyPolicy == auto: selectDependencyPkgs() (deps.go)
    │
    ├─ modulePkgs:
    │    every loaded package of the analyzed module not already named by --pkg/--scope
@@ -30,7 +30,7 @@ Stages:
    │      (TypesInfo.Selections → receiver type of the selected method;
    │       Origin() for generics; standard-library interfaces skipped)
    │    pick every non-stdlib, non-indicator package that declares a concrete,
-   │    non-"Mock*" named type implementing one of them
+   │    named type, other than a mock, implementing one of them
    │      (types.Implements on *T; for generic types/interfaces a
    │       method-name superset check instead)
    │
@@ -83,7 +83,7 @@ Input contains "."?
           ├─ YES → return it
           └─ NO  → resolveBareMethod(ssaPkg, name)
                     Scan all Members for *ssa.Type
-                    Skip types starting with "Mock"
+                    Skip mocks (mock.Mock / *gomock.Controller field)
                     Count matches:
                     ├─ 0 → error: not found
                     ├─ 1 → return it
@@ -95,13 +95,13 @@ Input contains "."?
 ```go
 type Algo string  // "vta" | "rta" | "cha"
 
-type DepPolicy string  // "auto" | "none"
+type DependencyPolicy string  // "auto" | "none"
 
 type Options struct {
     Dir, Pattern      string
     Algo              Algo
     Scope             []string
-    Deps              DepPolicy         // "" → DepAuto
+    DependencyPolicy  DependencyPolicy  // "" → DependencyAuto
     MaxDependencyPkgs int               // 0 → DefaultMaxDependencyPkgs (200)
     IsIndicator       func(string) bool // indicator packages never receive bodies
 }
@@ -196,25 +196,26 @@ Entry node not in graph?
 └─ node == nil  → error: "try --algo vta"
 
 Reset per-walk state (visited, counters)
-hits = dfs(entryNode, [entry.String()], cx=nil)
+hits = dfs(entryNode, [entry.String()], cross=nil)
 Return mergeByPosition(hits) (always non-nil slice), WalkStats
 ```
 
 `WalkStats`: `NodesVisited` (functions in your module, plus dependency
 functions counted once per entry from your code), `EdgesExamined`,
-`UnresolvedInvokes`, `TracedCrossings` (how many calls from your code led into
-a dependency).
+`UnresolvedInvokes`, `TracedCrossings` (how many times the walk went from your
+code into a dependency; one interface call with two dependency implementations
+counts twice).
 
 ### DFS Decision Tree
 
 Terms: a **crossing** is the call in your code through which the walk entered
 a dependency package; it remembers that call's position, callee and package.
-`dfs(node, chain, cx)` runs with `cx == nil` while in your module and with a
+`dfs(node, chain, cross)` runs with `cross == nil` while in your module and with a
 `*crossing` while inside a dependency. Your module uses one shared visited set
-(`w.visited`); each crossing has its own (`cx.visited`), so the same
+(`w.visited`); each crossing has its own (`cross.visited`), so the same
 dependency function can be re-walked from a different call in your code.
 
-Every record goes through `record(pos, cx, …)`: with `cx == nil` it points at
+Every record goes through `record(pos, cross, …)`: with `cross == nil` it points at
 the call itself; otherwise it points at the crossing's call in your code and
 gets `resolved_via: cross_module_trace`.
 
@@ -243,8 +244,8 @@ inModule(pkgPath)? → RECURSE dfs(callee, next, nil)
   (back in your code: findings are reported at the real line again)
 
 deps[pkgPath]? → enterDependency:
-  cx != nil → RECURSE dfs(callee, next, cx)
-  cx == nil →
+  cross != nil → RECURSE dfs(callee, next, cross)
+  cross == nil →
     open crossing{pos, function, pkgPath}; tracedCrossings++
     hits = dfs(callee, next, crossing)
     found nothing inside AND this was an interface call →
@@ -257,14 +258,14 @@ otherwise → skip (outside_module)
 
 After the edge loop, `unresolvedInvokes(node)` lists every interface call in
 this function that the call graph resolved to nothing, or only to mocks, and
-`classifyUnresolved(site)` decides what to do with each:
+`unresolvedHit(site, chain, cross)` decides what to do with each:
 
 ```
 interface is not a named type, is `error`, a type parameter, or a very common interface → ignore
 declared in stdlib → ignore
 unresolved++
 det.Detect(iface pkg)      → EMIT interface_dispatch / high
-inModule(iface pkg)        → count only (same_module_no_implementor)
+inModule(iface pkg)        → count only (same_module_no_implementation)
 inferFromTypesPkg(iface pkg) != "" → EMIT interface_dispatch / low
 ```
 
@@ -282,7 +283,7 @@ Hits with `token.NoPos` are never merged.
 
 CHA resolves these to every implementor in the program, producing noise.
 
-**`isMockMethod(fn)`**: Returns true if fn has a receiver type whose name starts with `"Mock"`. Mockery-generated mocks satisfy interfaces structurally → CHA routes through them into testify internals.
+**`isMockMethod(fn)`**: Returns true if fn's receiver is a mock according to `trawl.IsMock`: a struct with a field of type `mock.Mock` (testify, mockery) or `*gomock.Controller` (mockgen). It checks package and type names, not the type's own name, so a real `MockingbirdClient` is walked and a hand-written mock without such a field is walked too. Mocks satisfy interfaces, so the call graph sends interface calls through them, but their bodies only record the call for the test.
 
 **`interfaceMethodLabel(cc)`**: Returns `"InterfaceType.MethodName"` from an invoke call site. Used instead of concrete mock type names in output.
 

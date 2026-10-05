@@ -108,8 +108,9 @@ Filter                      │ What it catches                         │ How
 ────────────────────────────┼─────────────────────────────────────────┼────────────────────
 Ubiquitous interface filter │ error.Error(), fmt.Stringer.String()    │ Skip dispatch on
                             │ io.Reader.Read(), context.Context, etc. │ known noisy interfaces
-Mock type filter            │ (*MockStore).Get(), (*MockClient).Do()  │ Skip types with
-                            │                                         │ "Mock" name prefix
+Mock type filter            │ (*MockStore).Get(), (*MockClient).Do()  │ Skip structs with a
+                            │                                         │ mock.Mock or
+                            │                                         │ *gomock.Controller field
 Interface method labeling   │ Shows Store.Get not MockStore.Get       │ interfaceMethodLabel()
 Cross-module inference      │ Wrapper pkgs (rediscache → go-redis)    │ 2-level import scan
 ```
@@ -141,7 +142,12 @@ Interface calls that still have no concrete callee are reported as `interface_di
 
 **Tuning the selection limits**: 3 rounds and the 200-package cap are heuristics, not measured optima (see [ADR 0009](adr/0009-selective-dependency-bodies.md)). To check them against a real target, run with `--stats` twice — once as-is and once with `--deps none` — and compare `dependency_packages`, `packages_analyzed` and `load_duration_ms`. A `dependency_bodies_truncated` warning in the logs means the cap was hit; a large `unresolved_invokes` with a small `dependency_packages` means the rounds ran out before the chain resolved.
 
-**Limitations**: selection stops after three rounds — deeper interface chains inside dependencies end in `interface_dispatch` evidence. Static (non-interface) calls into body-less, non-indicator external packages are still skipped without inference. `nodes_visited` counts dependency-node entries once per crossing.
+**Limitations**
+
+- **Three rounds only.** An interface chain deeper than three hops inside dependencies is not traced; the last hop is reported as `interface_dispatch` instead.
+- **Plain calls into external packages without bodies are skipped.** Only calls made through an interface get the imports-based guess. A direct `lib.DoThing()` into a package that has no bodies and is not an indicator produces nothing.
+- **`nodes_visited` over-counts dependency functions.** A dependency function is counted again each time it is reached from a different call in your code.
+- **Dotless module paths look like standard library.** A package is treated as standard library when the first element of its import path has no dot (Go's own rule). A module declared as `module svc` is therefore mistaken for standard library: its packages never get bodies and its interfaces are not reported. Any module path a registry can serve contains a dot, so only local or GOPATH-style modules are affected.
 
 ## `--scope` Flag
 
