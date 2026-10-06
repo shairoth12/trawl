@@ -1,13 +1,24 @@
-// Package analysis loads a Go package, builds SSA form, and constructs a
-// call graph using either VTA or RTA.
+// Package analysis loads a Go package, builds its SSA form, and constructs a
+// call graph using VTA, RTA, or CHA.
+//
+// Besides the packages named by --pkg and --scope, function bodies are also
+// built for the other packages of the analyzed module and for dependency
+// packages that implement an interface the analyzed code calls. This lets the
+// walker follow a call through an interface into its real implementation
+// even when that implementation lives in another module.
 package analysis
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/token"
+	"go/types"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/callgraph/cha"
@@ -15,6 +26,8 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
+
+	"github.com/shairoth12/trawl"
 )
 
 // LoadResult holds the outcome of a successful package load and SSA build.
@@ -40,6 +53,62 @@ type LoadResult struct {
 	// PackagesLoaded is the total number of packages transitively loaded into
 	// the build, including dependencies. Useful for diagnosing slow analysis.
 	PackagesLoaded int
+
+	// DependencyPkgs lists the extra packages whose function bodies were
+	// built, beyond those named by --pkg and --scope: first the other packages
+	// of the analyzed module (sorted by path), then packages from other
+	// modules (in the round they were picked, then by path).
+	DependencyPkgs []string
+
+	// DependencyPkgsSkipped is how many other-module packages were left out
+	// because of Options.MaxDependencyPkgs.
+	DependencyPkgsSkipped int
+
+	// PackagesAnalyzed is the number of packages with built bodies: the
+	// --pkg/--scope packages plus len(DependencyPkgs).
+	PackagesAnalyzed int
+
+	// Stdlib is the set of standard-library import paths among the loaded
+	// packages, decided by provenance (see stdlibPkgs), not by path alone.
+	Stdlib map[string]bool
+}
+
+// DependencyPolicy selects which packages, beyond those named by --pkg and
+// --scope, get their function bodies built.
+type DependencyPolicy string
+
+const (
+	// DependencyAuto also builds bodies for the other packages of the analyzed
+	// module and for dependency packages that implement an interface the
+	// analyzed code calls.
+	DependencyAuto DependencyPolicy = "auto"
+	// DependencyNone builds bodies only for the --pkg and --scope packages
+	// (the behavior before dependency bodies existed).
+	DependencyNone DependencyPolicy = "none"
+)
+
+// DefaultMaxDependencyPkgs is the cap on other-module packages that get bodies
+// under DependencyAuto when Options.MaxDependencyPkgs is zero. It is a safety
+// limit for the rare case where a very generic interface (say Get(ctx, key))
+// matches dozens of unrelated packages, not a measured optimum: it counts
+// packages, not their size. Typical selections are far smaller. See
+// docs/adr/0009-selective-dependency-bodies.md.
+const DefaultMaxDependencyPkgs = 200
+
+// Options configures Load.
+type Options struct {
+	Dir     string   // working directory for go/packages, typically the module root
+	Pattern string   // package pattern to analyze, e.g. "." or "./cmd/server"
+	Algo    Algo     // call graph algorithm; "" defaults to AlgoVTA
+	Scope   []string // extra package patterns loaded as initial packages
+
+	DependencyPolicy  DependencyPolicy // "" defaults to DependencyAuto
+	MaxDependencyPkgs int              // cap on cross-module packages with bodies; 0 → DefaultMaxDependencyPkgs
+
+	// IsIndicator reports whether an import path matches a detector
+	// indicator. Matching packages never receive bodies: the walker records
+	// and stops at them anyway. nil disables the exclusion.
+	IsIndicator func(importPath string) bool
 }
 
 // Algo identifies the call graph construction algorithm.
@@ -60,24 +129,204 @@ const (
 // ErrPackageLoad is returned when one or more packages fail to load.
 var ErrPackageLoad = errors.New("package load errors")
 
-// Load loads the package at pattern from dir, builds SSA form, and constructs
-// a call graph using the given algorithm.
+// Load loads the package at opts.Pattern from opts.Dir, builds SSA form, and
+// constructs a call graph using opts.Algo.
 //
-// dir is the working directory passed to go/packages (typically the module root).
-// pattern is the package load pattern (e.g. ".", "./cmd/server").
-// algo selects the call graph algorithm; see AlgoVTA and AlgoRTA constants.
-// An empty string defaults to AlgoVTA.
+// opts.Scope names extra packages to load with bodies so their types are
+// visible. opts.DependencyPolicy decides whether more packages get bodies
+// automatically (see DependencyPolicy); opts.MaxDependencyPkgs caps how many
+// other-module packages that may be, and opts.IsIndicator excludes packages
+// the detector already classifies, since the walk stops at those anyway.
 //
 // For AlgoRTA, LoadResult.Graph is nil; the caller must resolve an entry point
 // and call rta.Analyze to produce the graph.
 //
 // ctx is propagated into package loading and checked before each expensive
-// phase. Cancelling ctx will abort Load early.
-func Load(ctx context.Context, dir, pattern string, algo Algo, scopePatterns ...string) (*LoadResult, error) {
+// phase.
+func Load(ctx context.Context, opts Options) (*LoadResult, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx must not be nil")
 	}
+	switch opts.DependencyPolicy {
+	case "":
+		opts.DependencyPolicy = DependencyAuto
+	case DependencyAuto, DependencyNone:
+	default:
+		return nil, fmt.Errorf("unknown dependency policy %q: supported values are %q and %q", opts.DependencyPolicy, DependencyAuto, DependencyNone)
+	}
 
+	allPatterns := make([]string, 0, 1+len(opts.Scope))
+	allPatterns = append(allPatterns, opts.Pattern)
+	for _, scopePattern := range opts.Scope {
+		scopePattern = strings.TrimSpace(scopePattern)
+		if scopePattern != "" && scopePattern != opts.Pattern {
+			allPatterns = append(allPatterns, scopePattern)
+		}
+	}
+	pkgs, err := loadPackages(ctx, opts.Dir, allPatterns)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check cancellation before the expensive SSA build.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var pkgCount int
+	packages.Visit(pkgs, func(*packages.Package) bool { pkgCount++; return true }, nil)
+
+	modulePath := modulePathOf(pkgs, opts.Dir, opts.Pattern)
+	stdlib := stdlibPkgs(pkgs)
+
+	var deps []*packages.Package
+	var skipped int
+	if opts.DependencyPolicy == DependencyAuto {
+		modulePkgs, external := selectDependencyPkgs(pkgs, modulePath, opts.IsIndicator, stdlib)
+		limit := opts.MaxDependencyPkgs
+		if limit <= 0 {
+			limit = DefaultMaxDependencyPkgs
+		}
+		if len(external) > limit {
+			skipped = len(external) - limit
+			external = external[:limit]
+		}
+		deps = append(modulePkgs, external...)
+	}
+	withBodies := make(map[*packages.Package]bool, len(deps))
+	depPaths := make([]string, 0, len(deps))
+	for _, p := range deps {
+		withBodies[p] = true
+		depPaths = append(depPaths, p.PkgPath)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	prog, ssaPkgs := createProgram(pkgs, withBodies, ssa.InstantiateGenerics)
+	if err := buildProgram(ctx, prog); err != nil {
+		return nil, err
+	}
+
+	ssaPkg, err := resolveSSAPkg(ssaPkgs, pkgs, opts.Dir, opts.Pattern, opts.Scope)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &LoadResult{
+		Prog:                  prog,
+		SSAPkg:                ssaPkg,
+		Module:                modulePath,
+		PackagesLoaded:        pkgCount,
+		DependencyPkgs:        depPaths,
+		DependencyPkgsSkipped: skipped,
+		PackagesAnalyzed:      len(ssaPkgs) + len(depPaths),
+		Stdlib:                stdlib,
+	}
+
+	return buildGraph(ctx, result, opts.Algo, opts.Pattern)
+}
+
+// stdlibPkgs returns the import paths of the standard-library packages among
+// pkgs and their dependencies. go/packages gives every package that belongs
+// to a module a Module and gives standard-library packages none, so a module
+// path without a dot ("module svc") is not taken for the standard library.
+// In GOPATH mode no package has a Module, so the path rule alone decides and
+// dotless GOPATH packages still count as standard library.
+func stdlibPkgs(pkgs []*packages.Package) map[string]bool {
+	out := map[string]bool{}
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Module == nil && trawl.IsStandardLibrary(p.PkgPath) {
+			out[p.PkgPath] = true
+		}
+	})
+	return out
+}
+
+// createProgram is a copy of ssautil.Packages with one change: ssautil gives
+// function bodies only to the --pkg/--scope packages, while this also gives
+// them to the packages in withBodies. Every package is created exactly once, and each
+// package is created after the packages it imports.
+func createProgram(initial []*packages.Package, withBodies map[*packages.Package]bool, mode ssa.BuilderMode) (*ssa.Program, []*ssa.Package) {
+	var fset *token.FileSet
+	if len(initial) > 0 {
+		fset = initial[0].Fset
+	}
+	prog := ssa.NewProgram(fset, mode)
+	isInitial := make(map[*packages.Package]bool, len(initial))
+	for _, p := range initial {
+		isInitial[p] = true
+	}
+	created := make(map[*packages.Package]*ssa.Package)
+	packages.Visit(initial, nil, func(p *packages.Package) {
+		if p.Types == nil || p.IllTyped {
+			return
+		}
+		var files []*ast.File
+		var info *types.Info
+		if isInitial[p] || withBodies[p] {
+			files, info = p.Syntax, p.TypesInfo
+		}
+		created[p] = prog.CreatePackage(p.Types, files, info, true)
+	})
+	ssaPkgs := make([]*ssa.Package, len(initial))
+	for i, p := range initial {
+		ssaPkgs[i] = created[p] // nil for ill-typed packages, as with ssautil.Packages
+	}
+	return prog, ssaPkgs
+}
+
+// buildProgram builds every created package. It does not use Program.Build
+// because that starts a goroutine per package, and a panic inside one of them
+// cannot be caught here and would crash the tool. Instead each package is
+// built by this function, at most GOMAXPROCS at a time, with any panic turned
+// into an error. Package.Build is safe to call this way: it may run
+// concurrently for different packages and does nothing the second time.
+//
+// When ctx is cancelled no more builds are started; builds already running
+// cannot be interrupted, so buildProgram waits for them and returns ctx.Err().
+func buildProgram(ctx context.Context, prog *ssa.Program) error {
+	pkgs := prog.AllPackages()
+	errs := make([]error, len(pkgs))
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	var wg sync.WaitGroup
+	for i, p := range pkgs {
+		sem <- struct{}{}
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := recoverBuild(p.Build); err != nil {
+				errs[i] = fmt.Errorf("package %s: %w", p.Pkg.Path(), err)
+			}
+		}()
+	}
+	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errors.Join(errs...)
+}
+
+// recoverBuild runs build and turns a panic into an error that tells the user
+// how to work around it (--deps none).
+func recoverBuild(build func()) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("building SSA: %v (retry with --deps none to exclude dependency bodies)", r)
+		}
+	}()
+	build()
+	return nil
+}
+
+// loadPackages runs go/packages for patterns from dir with the full mode
+// trawl needs (syntax and type info for every transitive package) and
+// converts package-level diagnostics into a single error.
+func loadPackages(ctx context.Context, dir string, patterns []string) ([]*packages.Package, error) {
 	cfg := &packages.Config{
 		Context: ctx,
 		Mode: packages.NeedName |
@@ -93,22 +342,14 @@ func Load(ctx context.Context, dir, pattern string, algo Algo, scopePatterns ...
 		Dir: dir,
 	}
 
-	allPatterns := make([]string, 0, 1+len(scopePatterns))
-	allPatterns = append(allPatterns, pattern)
-	for _, sp := range scopePatterns {
-		sp = strings.TrimSpace(sp)
-		if sp != "" && sp != pattern {
-			allPatterns = append(allPatterns, sp)
-		}
-	}
-	pkgs, err := packages.Load(cfg, allPatterns...)
+	pkgs, err := packages.Load(cfg, patterns...)
 	if err != nil {
 		// Use %w so callers can detect context.Canceled / context.DeadlineExceeded.
 		return nil, fmt.Errorf("packages.Load: %w", err)
 	}
 
 	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("no packages loaded for pattern %q", pattern)
+		return nil, fmt.Errorf("no packages loaded for pattern %q", patterns[0])
 	}
 
 	var pkgErrs []error
@@ -127,38 +368,30 @@ func Load(ctx context.Context, dir, pattern string, algo Algo, scopePatterns ...
 		}
 		return nil, fmt.Errorf("%w: %w", ErrPackageLoad, errors.Join(pkgErrs...))
 	}
+	return pkgs, nil
+}
 
-	// Check cancellation before the expensive SSA build.
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	var pkgCount int
-	packages.Visit(pkgs, func(*packages.Package) bool { pkgCount++; return true }, nil)
-
-	prog, ssaPkgs := ssautil.Packages(pkgs, ssa.InstantiateGenerics)
-	prog.Build() // Build has no error return; panics on internal SSA errors.
-
-	ssaPkg, err := resolveSSAPkg(ssaPkgs, pkgs, dir, pattern, scopePatterns)
-	if err != nil {
-		return nil, err
-	}
-
-	var modulePath string
-	for _, pkg := range pkgs {
-		if pkg.Module != nil {
-			modulePath = pkg.Module.Path
-			break
+// modulePathOf returns the module path of the primary package (the one
+// matching pattern), falling back to the first package that has module
+// information. It is empty in GOPATH mode.
+func modulePathOf(pkgs []*packages.Package, dir, pattern string) string {
+	primary := findPrimaryPkgPath(pkgs, dir, pattern)
+	for _, p := range pkgs {
+		if p.PkgPath == primary && p.Module != nil {
+			return p.Module.Path
 		}
 	}
-
-	result := &LoadResult{
-		Prog:           prog,
-		SSAPkg:         ssaPkg,
-		Module:         modulePath,
-		PackagesLoaded: pkgCount,
+	for _, p := range pkgs {
+		if p.Module != nil {
+			return p.Module.Path
+		}
 	}
+	return ""
+}
 
+// buildGraph attaches the call graph selected by algo to result.
+func buildGraph(ctx context.Context, result *LoadResult, algo Algo, pattern string) (*LoadResult, error) {
+	prog := result.Prog
 	switch algo {
 	case AlgoRTA:
 		// Graph is nil for RTA; the caller resolves an entry point and calls
@@ -193,9 +426,66 @@ func Load(ctx context.Context, dir, pattern string, algo Algo, scopePatterns ...
 	if graph == nil {
 		return nil, fmt.Errorf("vta.CallGraph returned nil for pattern %q", pattern)
 	}
+	fillEmptyInvokes(graph, initial, result.Stdlib)
 	result.Graph = graph
 
 	return result, nil
+}
+
+// fillEmptyInvokes gives each interface call that VTA resolved to nothing the
+// callees CHA found for it. VTA only follows values through code, so an
+// interface filled by reflection-based DI (dig, fx) has no callees; CHA
+// matches by type and finds the implementations, including the ones in
+// dependency packages whose bodies were built for this. Interfaces declared in
+// the standard library, and error, are left alone: they match too many types
+// and no dependency bodies are built for them. A call whose only VTA callees
+// are mocks counts as empty too, the same rule the walker uses: a mock set in
+// non-test code hides the real, injected implementation. Only callees with a
+// built body are copied; an edge into an empty function would end the walk
+// there, while leaving the call empty lets the walker report it as unresolved.
+func fillEmptyInvokes(graph, initial *callgraph.Graph, stdlib map[string]bool) {
+	resolved := map[ssa.CallInstruction]bool{}
+	for _, n := range graph.Nodes {
+		for _, edge := range n.Out {
+			if edge.Callee == nil || edge.Callee.Func == nil || trawl.IsMockMethod(edge.Callee.Func.Signature) {
+				continue
+			}
+			resolved[edge.Site] = true
+		}
+	}
+	for fn, n := range initial.Nodes {
+		for _, edge := range n.Out {
+			if fn == nil || edge.Site == nil || !hasBody(edge.Callee.Func) || resolved[edge.Site] || !invokesNonStdlibInterface(edge.Site, stdlib) {
+				continue
+			}
+			callgraph.AddEdge(graph.CreateNode(fn), edge.Site, graph.CreateNode(edge.Callee.Func))
+		}
+	}
+}
+
+// hasBody reports whether fn has a built body. A synthetic wrapper such as
+// (*T).M always has one, so for it the declared method it calls is checked.
+func hasBody(fn *ssa.Function) bool {
+	if obj, ok := fn.Object().(*types.Func); ok {
+		if decl := fn.Prog.FuncValue(obj); decl != nil {
+			fn = decl
+		}
+	}
+	return len(fn.Blocks) > 0
+}
+
+// invokesNonStdlibInterface reports whether site calls a method on a named
+// interface declared outside the standard library.
+func invokesNonStdlibInterface(site ssa.CallInstruction, stdlib map[string]bool) bool {
+	cc := site.Common()
+	if !cc.IsInvoke() {
+		return false
+	}
+	named, ok := types.Unalias(cc.Value.Type()).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return false
+	}
+	return !stdlib[named.Obj().Pkg().Path()]
 }
 
 // resolveSSAPkg selects the SSA package to use as the analysis entry point.

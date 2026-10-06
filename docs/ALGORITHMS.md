@@ -10,13 +10,14 @@ What kind of DI does your codebase use?
 ├─ No DI / all concrete types visible in analyzed package
 │   └─ use: --algo vta (default)
 │
-├─ Manual constructor injection (NewServer(NewStore()))
+├─ Constructor injection (NewServer(NewStore()), or wire's generated code)
 │   └─ use: --algo vta --scope ./cmd/server
 │      (scope loads the wiring package so VTA can trace value flow)
 │
-├─ Reflection-based DI (dig, fx, wire)
-│   └─ use: --algo cha --scope ./...
-│      (CHA resolves by structural type matching, no value flow needed)
+├─ Reflection-based DI (dig, fx)
+│   └─ use: --algo vta (default)
+│      (calls with no value flow fall back to CHA callees)
+│      if interface_dispatch records remain: --algo cha
 │
 └─ Unsure / want broadest coverage
     └─ use: --algo cha --scope ./...
@@ -38,8 +39,8 @@ Graph built when  │ During Load()        │ After Resolve()      │ During L
 Requires entry    │ NO (whole-program)   │ YES (entry roots)    │ NO (whole-program)
 Interface resolve │ By observed value    │ By instantiated      │ By any structural
                   │ flow assignments     │ concrete types       │ implementor
-Reflection DI     │ CANNOT trace         │ CANNOT trace         │ RESOLVES (by type
-                  │ reflect.Call         │ reflect.Call         │ structure)
+Reflection DI     │ CHA fallback for     │ CANNOT trace         │ RESOLVES (by type
+                  │ calls with no flow   │ reflect.Call         │ structure)
 False positive    │ LOW                  │ LOW                  │ HIGHER (mitigated
 risk              │                      │                      │ by filters)
 ```
@@ -54,14 +55,19 @@ cha.CallGraph(prog)                    ← seed: all structural matches
     │
     ▼
 vta.CallGraph(allFunctions, chaGraph)  ← refinement: prune by value flow
+    │
+    ▼
+fillEmptyInvokes(vtaGraph, chaGraph)   ← interface calls left with no callee get the CHA ones
 ```
+
+**CHA fallback**: VTA gives an interface call no callees (or only mock callees) when no real value visibly reaches it, which is what reflection-based DI (dig, fx) looks like. For those calls only, trawl copies the CHA callees into the VTA graph, so the walk still enters the implementation (and the dependency bodies built for it). Calls on interfaces declared in the standard library (and `error`) are not filled: CHA would match every implementation in the program. Only callees with a built body are copied (for a synthetic wrapper like `(*T).M`, the method it calls must have one): an edge into an empty function would end the walk there, so under `--deps none` a call whose implementation has no body stays unresolved and is reported or counted as such. Calls where VTA found at least one callee are left as VTA found them.
 
 **When to use**:
 - Default choice for most codebases
 - When concrete types are wired via constructors in visible code
 - When precision matters more than coverage
 
-**Limitation**: Cannot trace through `reflect.Call`, `interface{}`/`any` type assertions at runtime, or DI containers that use reflection.
+**Limitation**: Cannot trace through `reflect.Call` or `interface{}`/`any` type assertions at runtime. Interfaces filled by a DI container get the CHA fallback above, with CHA's precision and its precondition (the concrete type must be converted to an interface somewhere in built code).
 
 **With `--scope`**: Loading extra packages gives VTA more value-flow edges to observe. Requires explicit value flow in the loaded code (e.g., a `Wire()` function that calls `HandleLeaf(ctx, &SQLStore{})`).
 
@@ -93,9 +99,10 @@ cha.CallGraph(prog) → graph  (used directly, no VTA refinement)
 ```
 
 **When to use**:
-- Reflection-based DI frameworks (dig, fx, wire)
 - When you want the broadest possible coverage
-- When `--algo vta` misses calls because concrete types aren't visibly wired
+- When `--algo vta` still reports `interface_dispatch` records: VTA keeps its own callees for a call where some value does flow, so an implementation bound only by reflection at that call is missed
+
+**Precondition**: CHA only considers concrete types that are *runtime types* of the program — some **built** function body must convert the type to an interface (`MakeInterface`): a constructor returning the interface, or `var _ I = (*T)(nil)`. A dependency whose constructor returns the concrete type and is bound to the interface only through reflection degrades to an `interface_dispatch` record.
 
 **Trade-off**: Over-approximates. CHA reports `Store.Get` being dispatched to `MockStore.Get` even if `MockStore` is never used at runtime. trawl mitigates this with filters:
 
@@ -106,15 +113,50 @@ Filter                      │ What it catches                         │ How
 ────────────────────────────┼─────────────────────────────────────────┼────────────────────
 Ubiquitous interface filter │ error.Error(), fmt.Stringer.String()    │ Skip dispatch on
                             │ io.Reader.Read(), context.Context, etc. │ known noisy interfaces
-Mock type filter            │ (*MockStore).Get(), (*MockClient).Do()  │ Skip types with
-                            │                                         │ "Mock" name prefix
+Mock type filter            │ (*MockStore).Get(), (*MockClient).Do()  │ Skip structs with a
+                            │                                         │ mock.Mock or
+                            │                                         │ *gomock.Controller field
 Interface method labeling   │ Shows Store.Get not MockStore.Get       │ interfaceMethodLabel()
 Cross-module inference      │ Wrapper pkgs (rediscache → go-redis)    │ 2-level import scan
 ```
 
+## Dependency Bodies (`--deps`)
+
+By default (`--deps auto`) trawl builds SSA function bodies not only for `--pkg` and `--scope` packages but also for:
+
+- every other package of the analyzed module that the target imports, and
+- dependency packages that declare a concrete, non-mock implementor of an interface the analyzed code invokes — selected in up to 3 rounds (so a facade's own interface dependencies resolve too), capped at 200 packages, never stdlib or indicator-matching packages.
+
+The walker recurses into those bodies and reports what it finds at the module-side call site (`resolved_via: cross_module_trace`). Interfaces implemented in a dependency module therefore resolve **without** adding the dependency to `--scope`. `--deps none` restores body construction for the initial packages only.
+
+**Example.** "Body" means the function's code, as opposed to its signature. Your handler calls `h.store.Get(ctx, key)` where `store.Store` is an interface from `example.com/lib/store`, and the only real implementation is `(*sqlStore).Get`, which calls `database/sql`:
+
+```
+--deps none   lib/store loaded as signatures only
+              HandleGet ─► Store.Get ─► (*sqlStore).Get [no body: dead end]      → external_calls: []
+
+--deps auto   round 1: svc calls store.Store → lib/store declares *sqlStore → build its bodies
+              HandleGet ─► Store.Get ─► (*sqlStore).Get ─► sql.DB.QueryRowContext → POSTGRES,
+                                                                                    cross_module_trace,
+                                                                                    reported at HandleGet's line
+```
+
+If `(*sqlStore).Get` itself called a second interface (say `search.Searcher`) implemented in `lib/search`, round 2 would build `lib/search` the same way. That is what the rounds are for.
+
+Interface calls that still have no concrete callee are reported as `interface_dispatch` records (high confidence when the interface is declared in an indicator package, low when inferred from that package's imports) and counted in `stats.unresolved_invokes`. RTA still cannot resolve reflection-based DI, but it now yields these hints instead of silence; VTA falls back to CHA for such calls (see [VTA](#vta-variable-type-analysis--default)).
+
+**Tuning the selection limits**: 3 rounds and the 200-package cap are heuristics, not measured optima (see [ADR 0009](adr/0009-selective-dependency-bodies.md)). To check them against a real target, run with `--stats` twice — once as-is and once with `--deps none` — and compare `dependency_packages`, `packages_analyzed` and `load_duration_ms`. A `dependency_bodies_truncated` warning in the logs means the cap was hit; a large `unresolved_invokes` with a small `dependency_packages` means the rounds ran out before the chain resolved.
+
+**Limitations**
+
+- **Three rounds only.** An interface chain deeper than three hops inside dependencies is not traced; the last hop is reported as `interface_dispatch` instead.
+- **Plain calls into external packages without bodies are skipped.** Only calls made through an interface get the imports-based guess. A direct `lib.DoThing()` into a package that has no bodies and is not an indicator produces nothing.
+- **`nodes_visited` over-counts dependency functions.** A dependency function is counted again each time it is reached from a different call in your code.
+- **Dotless GOPATH paths look like standard library.** A package is standard library when the loader reports no module for it and the first element of its import path has no dot (Go's own rule). In module mode every non-stdlib package has a module, so `module svc` is handled correctly. In GOPATH mode no package has a module, so a dotless GOPATH package is mistaken for standard library: it never gets a body and its interfaces are not reported.
+
 ## `--scope` Flag
 
-`--scope` loads additional packages into the SSA program to enrich the type universe. The primary package (`--pkg`) remains the analysis target.
+`--scope` loads additional packages *as initial packages* to enrich the type universe. The primary package (`--pkg`) remains the analysis target. Since same-module packages imported by the target and implementor dependency packages are built automatically, `--scope` is needed for **wiring** packages the target does not import (e.g. `cmd/server` wiring a constructor-injected handler).
 
 ```
 Without scope:    packages.Load("./internal/handler")
@@ -155,7 +197,7 @@ Scenario                                    │ Recommended flags
 ────────────────────────────────────────────┼──────────────────────────────────────────
 Simple handler, no DI                       │ --algo vta
 Handler with constructor DI (visible wiring)│ --algo vta --scope ./cmd/server
-Handler with dig/fx/wire DI                 │ --algo cha --scope ./...
+Handler with dig/fx DI                      │ --algo vta (--algo cha if interface_dispatch remains)
 Maximum coverage, accept false positives    │ --algo cha --scope ./...
 Fast analysis, good-enough precision        │ --algo rta
 Analyzing a leaf package in isolation       │ --algo vta (no external calls expected)

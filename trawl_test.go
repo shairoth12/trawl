@@ -202,13 +202,16 @@ func TestResultWithStats_JSONRoundTrip(t *testing.T) {
 		Package:       "github.com/example/app",
 		ExternalCalls: []ExternalCall{},
 		Stats: &AnalysisStats{
-			PackagesLoaded: 12,
-			CallGraphNodes: 300,
-			CallGraphEdges: 850,
-			NodesVisited:   45,
-			EdgesExamined:  120,
-			LoadDurationMs: 1500,
-			WalkDurationMs: 30,
+			PackagesLoaded:     12,
+			PackagesAnalyzed:   4,
+			DependencyPackages: 3,
+			CallGraphNodes:     300,
+			CallGraphEdges:     850,
+			NodesVisited:       45,
+			EdgesExamined:      120,
+			UnresolvedInvokes:  2,
+			LoadDurationMs:     1500,
+			WalkDurationMs:     30,
 		},
 	}
 
@@ -224,6 +227,37 @@ func TestResultWithStats_JSONRoundTrip(t *testing.T) {
 
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("Result with Stats JSON round-trip mismatch (-want +got):\n%s", diff)
+	}
+
+	var raw struct {
+		Stats map[string]json.RawMessage `json:"stats"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("json.Unmarshal to raw map error: %v", err)
+	}
+	for _, key := range []string{"packages_analyzed", "dependency_packages", "unresolved_invokes"} {
+		if _, ok := raw.Stats[key]; !ok {
+			t.Errorf("stats JSON missing key %q", key)
+		}
+	}
+}
+
+func TestIsStandardLibrary(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"net/http", true}, {"fmt", true}, {"database/sql", true}, {"unsafe", true},
+		{"github.com/foo/bar", false}, {"example.com/lib/store", false}, {"golang.org/x/tools/go/ssa", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+			if got := IsStandardLibrary(tt.path); got != tt.want {
+				t.Errorf("IsStandardLibrary(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
 	}
 }
 

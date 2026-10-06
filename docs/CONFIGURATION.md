@@ -80,6 +80,45 @@ Example ordering:
 
 Both entries produce `resolved_via: "direct"` and `confidence: "high"` matches.
 
+## Indicators and Dependency Bodies
+
+trawl never builds function bodies for a package that matches an indicator (`--deps auto`): a call into such a package is reported and the walk stops there, so its code is never needed. If an *interface* is declared in an indicator package, calls through it are reported with high confidence even when no implementation is visible (`resolved_via: interface_dispatch`). So a wrapper library that exposes an interface does not need `wrapper_for`.
+
+Do **not** add an indicator or `wrapper_for` for a package that wraps several backends (say one client type with a Postgres method and an HTTP method). An indicator gives every method the same service type; without it, trawl walks into each method and classifies it by what it actually calls.
+
+**Example 1 — interface-fronted wrapper, indicator is enough:**
+
+```go
+// github.com/org/cache (in trawl.yaml as REDIS)
+type Cache interface { Get(ctx, key string) (string, error) }   // implementation bound by DI
+```
+```go
+// your handler
+v, err := h.cache.Get(ctx, "user:1")
+```
+```
+→ REDIS, resolved_via: interface_dispatch, confidence: high
+```
+trawl never builds `org/cache`'s bodies; the interface is declared in an indicator package, and that alone is the evidence. No `wrapper_for` needed.
+
+**Example 2 — one package, several backends, do not add an indicator:**
+
+```go
+// github.com/org/store
+func (s *Store) Get(ctx, key)    { s.db.QueryRowContext(...) }        // database/sql
+func (s *Store) Fetch(ctx, url)  { s.http.Do(...) }                   // net/http
+```
+
+```
+without an indicator (default):
+  h.store.Get(...)    → POSTGRES  (cross_module_trace, high)
+  h.store.Fetch(...)  → HTTP      (cross_module_trace, high)
+
+with  - package: "github.com/org/store"  service_type: "POSTGRES":
+  h.store.Get(...)    → POSTGRES
+  h.store.Fetch(...)  → POSTGRES  ← wrong; the walk stops at the indicator and never sees net/http
+```
+
 ## Validation
 
 `Config.Validate()` runs automatically during `LoadConfig()`. It rejects:

@@ -6,33 +6,66 @@ Deep reference for each internal package. Read [ARCHITECTURE.md](ARCHITECTURE.md
 
 ## Package `internal/analysis`
 
-**Files**: `analysis.go`, `resolve.go`
+**Files**: `analysis.go`, `deps.go`, `resolve.go`
 **Purpose**: Load Go packages into SSA form, construct call graphs, resolve entry points.
 
-### `Load(ctx, dir, pattern, algo, scopePatterns...) (*LoadResult, error)`
+### `Load(ctx, opts Options) (*LoadResult, error)`
 
 Stages:
 
 ```
-1. Build packages.Config with all NeedX modes
-2. Merge pattern + scopePatterns into single packages.Load call
-3. Check for package errors
+1. Validate opts.DependencyPolicy ("" → auto; anything but auto/none → error)
+2. loadPackages(): packages.Config with all NeedX modes, pattern + scope
+   patterns in a single packages.Load call, package errors → ErrPackageLoad
    └─ Special case: toolchain version mismatch → descriptive error
-4. ctx.Err() check (cancellation gate)
-5. ssautil.Packages(pkgs, ssa.InstantiateGenerics) → prog, ssaPkgs
-6. prog.Build()
-7. resolveSSAPkg() — find the primary SSA package
-   └─ With scope: match by directory path (GoFiles[0] dir == abs(dir/pattern))
-   └─ Without scope: ssaPkgs[0]
-8. Extract module path from first pkg with non-nil Module
+3. ctx.Err() check (cancellation gate)
+4. modulePathOf() — module of the primary package (falls back to first pkg with a Module)
+5. DependencyPolicy == auto: selectDependencyPkgs() (deps.go)
+   │
+   ├─ modulePkgs:
+   │    every loaded package of the analyzed module not already named by --pkg/--scope
+   │
+   ├─ round 1:
+   │    list the interfaces that module code calls methods on
+   │      (TypesInfo.Selections → receiver type of the selected method;
+   │       Origin() for generics; standard-library interfaces skipped)
+   │    pick every non-stdlib, non-indicator package that declares a concrete,
+   │    named type, other than a mock, implementing one of them
+   │      (types.Implements on *T; for generic types/interfaces a
+   │       method-name superset check instead)
+   │
+   ├─ rounds 2..3:
+   │    same again, but only looking at what the packages picked in the
+   │    previous round call — this is how a facade's own interface
+   │    dependencies resolve
+   │
+   └─ cap:
+        dependency-module list cut at MaxDependencyPkgs (default 200);
+        the number dropped is kept as DependencyPkgsSkipped
+
+6. createProgram(pkgs, withBodies):
+     ssa.NewProgram + one CreatePackage per package, dependencies before
+     dependents (packages.Visit post-order)
+     bodies (syntax + type info) attached for --pkg/--scope packages and
+     the selected ones
+
+7. buildProgram():
+     Package.Build per package in ≤GOMAXPROCS goroutines
+     panic → error mentioning --deps none
+
+8. resolveSSAPkg() — find the primary SSA package
+   ├─ With scope → match by directory path (GoFiles[0] dir == abs(dir/pattern))
+   └─ Without scope → ssaPkgs[0]
+
 9. Branch on algo:
-   ├─ RTA  → return (Graph: nil)
-   ├─ CHA  → graph = cha.CallGraph(prog)
-   └─ VTA  → initial = cha.CallGraph(prog)
-              graph = vta.CallGraph(allFunctions, initial)
+   ├─ RTA → return (Graph: nil)
+   ├─ CHA → graph = cha.CallGraph(prog)
+   └─ VTA →
+        initial = cha.CallGraph(prog)
+        graph = vta.CallGraph(allFunctions, initial)
 ```
 
-**Key API**: `ssautil.Packages(pkgs, mode)` is the correct modern API. `ssautil.CreateProgram` takes deprecated `*loader.Program`, NOT `[]*packages.Package`.
+**Key API**: `createProgram` is a copy of `ssautil.Packages(pkgs, mode)` with one change: `ssautil` attaches bodies only to the `--pkg`/`--scope` packages, `createProgram` also attaches them to the selected dependency packages. `ssautil.CreateProgram` takes deprecated `*loader.Program`, NOT `[]*packages.Package`. `Program.Build` is avoided because its per-package goroutines cannot recover panics.
 
 **Flag**: `ssa.InstantiateGenerics` — required so that generic type instantiations produce concrete SSA functions.
 
@@ -50,7 +83,7 @@ Input contains "."?
           ├─ YES → return it
           └─ NO  → resolveBareMethod(ssaPkg, name)
                     Scan all Members for *ssa.Type
-                    Skip types starting with "Mock"
+                    Skip mocks (mock.Mock / *gomock.Controller field)
                     Count matches:
                     ├─ 0 → error: not found
                     ├─ 1 → return it
@@ -62,11 +95,26 @@ Input contains "."?
 ```go
 type Algo string  // "vta" | "rta" | "cha"
 
+type DependencyPolicy string  // "auto" | "none"
+
+type Options struct {
+    Dir, Pattern      string
+    Algo              Algo
+    Scope             []string
+    DependencyPolicy  DependencyPolicy  // "" → DependencyAuto
+    MaxDependencyPkgs int               // 0 → DefaultMaxDependencyPkgs (200)
+    IsIndicator       func(string) bool // indicator packages never receive bodies
+}
+
 type LoadResult struct {
-    Prog   *ssa.Program       // full SSA program
-    Graph  *callgraph.Graph   // nil for RTA
-    SSAPkg *ssa.Package       // primary analyzed package
-    Module string             // module path from go.mod
+    Prog                  *ssa.Program     // full SSA program
+    Graph                 *callgraph.Graph // nil for RTA
+    SSAPkg                *ssa.Package     // primary analyzed package
+    Module                string           // module path from go.mod
+    PackagesLoaded        int
+    DependencyPkgs        []string         // same-module (sorted), then external by round then path
+    DependencyPkgsSkipped int
+    PackagesAnalyzed      int              // initial + len(DependencyPkgs)
 }
 
 var ErrPackageLoad = errors.New("package load errors")
@@ -129,110 +177,138 @@ All builtins have `SkipInternal: true`.
 
 ## Package `internal/walker`
 
-**Files**: `walker.go`, `export_test.go`
+**Files**: `walker.go`, `merge.go`, `export_test.go`
 **Purpose**: DFS traversal of an SSA call graph. Detects external service calls reachable from an entry point.
 
-### `New(graph, detector, module, fset, log) *Walker`
+### `New(graph, detector, opts Options) *Walker`
 
-Creates a walker. Not safe for concurrent use. Pass `nil` for `log` to disable
-debug logging (used in tests); otherwise pass the `*slog.Logger` from the CLI.
+`Options{Module, DependencyPkgs, Fset, Log}`. `DependencyPkgs` is
+`LoadResult.DependencyPkgs` — the packages whose bodies the walker may enter.
+Not safe for concurrent use. A nil `Log` disables debug logging. The result of
+"which service does this package import" is cached per `*types.Package` for
+the walker's lifetime.
 
-### `Walk(entry) ([]ExternalCall, error)`
+### `Walk(entry) ([]ExternalCall, WalkStats, error)`
 
 ```
 Entry node not in graph?
 ├─ graph == nil → error: "did you forget rta.Analyze?"
 └─ node == nil  → error: "try --algo vta"
 
-Initialize visited map
-Call dfs(entryNode, [entry.String()], visited)
-Return results (always non-nil slice)
+Reset per-walk state (visited, counters)
+hits = dfs(entryNode, [entry.String()], cross=nil)
+Return mergeByPosition(hits) (always non-nil slice), WalkStats
 ```
 
+`WalkStats`: `NodesVisited` (functions in your module, plus dependency
+functions counted once per entry from your code), `EdgesExamined`,
+`UnresolvedInvokes`, `TracedCrossings` (how many times the walk went from your
+code into a dependency; one interface call with two dependency implementations
+counts twice).
+
 ### DFS Decision Tree
+
+Terms: a **crossing** is the call in your code through which the walk entered
+a dependency package; it remembers that call's position, callee and package.
+`dfs(node, chain, cross)` runs with `cross == nil` while in your module and with a
+`*crossing` while inside a dependency. Your module uses one shared visited set
+(`w.visited`); each crossing has its own (`cross.visited`), so the same
+dependency function can be re-walked from a different call in your code.
+
+Every record goes through `record(pos, cross, …)`: with `cross == nil` it points at
+the call itself; otherwise it points at the crossing's call in your code and
+gets `resolved_via: cross_module_trace`.
 
 For each outgoing edge from current node:
 
 ```
-callee == nil or callee.Func == nil?
-├─ YES → skip
-└─ NO  → fn = callee.Func
-          pkg = fn.Package()
+fn = calleeFunc(edge); fn == nil? → skip
 
-pkg == nil? (Generic Instantiation Path)
-├─ YES
-│   recvPath = receiverPkgPath(fn)
-│   recvPath == ""? → skip
-│   isUbiquitousDispatch(edge)? → skip
-│   Same module? → RECURSE DFS
-│   External + invoke edge?
-│   ├─ YES → inferFromTypesPkg → classify
-│   │        Default: cross_module_inference / low
-│   │        isMockReceiver? → mock_inference / medium
-│   │        det.Detect(recvPath)? → direct / high
-│   │        EMIT ExternalCall (with interface label)
-│   └─ NO  → skip
-│
-└─ NO
-    pkgPath = pkg.Pkg.Path()
-    isUbiquitousDispatch(edge)? → skip
-    isMockMethod(fn)?
-    ├─ YES
-    │   Same module? → skip entirely
-    │   External + invoke?
-    │   ├─ YES → inferFromImports → classify
-    │   │        Default: mock_inference / medium
-    │   │        det.Detect()? → direct / high
-    │   │        EMIT ExternalCall (with interface label)
-    │   └─ NO  → skip
-    │
-    ├─ NO
-    │   det.Detect(pkgPath) matches?
-    │   ├─ YES → EMIT ExternalCall (direct / high)
-    │   │        Do NOT recurse into library internals
-    │   │
-    │   └─ NO
-    │       Outside module boundary?
-    │       ├─ YES + invoke edge?
-    │       │   └─ inferFromImports → EMIT if match (cross_module / low)
-    │       ├─ YES (no invoke) → stop, don't recurse
-    │       └─ NO (inside module) → RECURSE DFS
+pkgPath, typesPkg = calleePkg(fn)
+  first non-nil: Package() → Origin().Package() → Object().Pkg() → receiver's named type
+pkgPath == ""? → skip (unknown_package)
+
+isUbiquitousDispatch(edge)? → skip
+
+isMockMethod(fn)? → mockHits:
+  inside a dependency, or same module, or the mock's package has bodies,
+  or not an interface call → skip (the real implementation is reachable)
+  inferFromTypesPkg == "" → skip
+  otherwise →
+    EMIT (interface label): mock_inference / medium
+    upgraded to direct / high if det.Detect(pkgPath)
+
+det.Detect(pkgPath)? → EMIT via record (direct / high); do not recurse
+
+inModule(pkgPath)? → RECURSE dfs(callee, next, nil)
+  (back in your code: findings are reported at the real line again)
+
+deps[pkgPath]? → enterDependency:
+  cross != nil → RECURSE dfs(callee, next, cross)
+  cross == nil →
+    open crossing{pos, function, pkgPath}; tracedCrossings++
+    hits = dfs(callee, next, crossing)
+    found nothing inside AND this was an interface call →
+      guess from the package's imports → EMIT cross_module_inference / low
+
+interface call? → guess from the package's imports → EMIT via record (cross_module_inference / low)
+
+otherwise → skip (outside_module)
 ```
+
+After the edge loop, `unresolvedInvokes(node)` lists every interface call in
+this function that the call graph resolved to nothing, or only to mocks, and
+`unresolvedHit(site, chain, cross)` decides what to do with each:
+
+```
+interface is not a named type, is `error`, a type parameter, or a very common interface → ignore
+declared in stdlib → ignore
+unresolved++
+det.Detect(iface pkg)      → EMIT interface_dispatch / high
+inModule(iface pkg)        → count only (same_module_no_implementation)
+inferFromTypesPkg(iface pkg) != "" → EMIT interface_dispatch / low
+```
+
+Finally `mergeByPosition(hits)` (merge.go) collapses hits with equal
+`(ServiceType, pos)` into one record: higher confidence wins; on a tie the
+interface name ("Store.Get") beats a concrete method name ("(*sqlStore).Get");
+otherwise the first wins.
+Hits with `token.NoPos` are never merged.
 
 ### Filter Functions
 
 **`isUbiquitousDispatch(edge)`**: Returns true if the edge is an interface dispatch (`cc.IsInvoke()`) on one of these types:
 - `error` (builtin, `Pkg() == nil`)
-- `fmt.Stringer`, `io.Reader`, `io.Writer`, `io.Closer`, `context.Context`, `sort.Interface`
+- `fmt.Stringer`, `io.Reader`, `io.Writer`, `io.Closer`, `io.ReadCloser`, `io.WriteCloser`, `io.ReadWriteCloser`, `context.Context`, `sort.Interface`
 
 CHA resolves these to every implementor in the program, producing noise.
 
-**`isMockMethod(fn)`**: Returns true if fn has a receiver type whose name starts with `"Mock"`. Mockery-generated mocks satisfy interfaces structurally → CHA routes through them into testify internals.
-
-**`isMockReceiver(fn)`**: Like `isMockMethod` but works when `fn.Package() == nil` (generic instantiations).
+**`isMockMethod(fn)`**: Returns true if fn's receiver is a mock according to `trawl.IsMock`: a struct with a field of type `mock.Mock` (testify, mockery) or `*gomock.Controller` (mockgen). It checks package and type names, not the type's own name, so a real `MockingbirdClient` is walked and a hand-written mock without such a field is walked too. Mocks satisfy interfaces, so the call graph sends interface calls through them, but their bodies only record the call for the test.
 
 **`interfaceMethodLabel(cc)`**: Returns `"InterfaceType.MethodName"` from an invoke call site. Used instead of concrete mock type names in output.
 
 ### Inference Functions
 
-**`inferFromImports(ssaPkg)`**: Checks if ssaPkg imports (direct or 1-level transitive) a package that the detector recognizes. Returns the matched `ServiceType` or `""`.
+**`inferFromTypesPkg(typesPkg)`**: Checks if typesPkg imports (directly, or via one of its direct imports) a package that the detector recognizes. Returns the matched `ServiceType` or `""`. Cached per package on the Walker.
 
-**`inferFromTypesPkg(typesPkg)`**: Same logic on `*types.Package` instead of `*ssa.Package`. Used for generic instantiations where the SSA package is nil.
-
-Both check 2 levels of imports to handle wrapper patterns:
+It checks 2 levels of imports to handle wrapper patterns:
 ```
 rediscache → infra/redis → go-redis  (2 levels)
 ```
 
 ### Helper Functions
 
-**`receiverPkgPath(fn)`**: Extracts `fn.Signature.Recv()` → pointer deref → `*types.Named` → `Obj().Pkg().Path()`. Returns `""` if any step fails.
+**`calleePkg(fn)`**: Which package owns fn. First non-nil wins: (1) `fn.Package()`, (2) `fn.Origin().Package()` for generic instantiations, (3) `fn.Object().Pkg()` for synthetic wrappers, (4) the package of the receiver's named type.
 
-**`receiverTypesPkg(fn)`**: Same chain but returns `*types.Package` instead of path string.
+**`receiverTypesPkg(fn)`**: `fn.Signature.Recv()` → pointer deref → `*types.Named` → `Obj().Pkg()`; nil if any step fails.
+
+**`calleeFunc(edge)` / `isInvoke(edge)` / `sitePos(edge)`**: nil-safe accessors for the callee function, whether the edge is an interface call, and the call-site position (`token.NoPos` for synthetic edges).
+
+**`posAt(pos)`** / **`hitAt(pos, …)`**: Resolve a position to file/line and build a `hit` (an `ExternalCall` plus its position, the merge key).
 
 **`appendCopy(chain, elem)`**: Always allocates a new slice. Prevents DFS branch corruption through Go's slice aliasing.
 
-**`posFile(edge)`** / **`posLine(edge)`**: Extract source position from edge.Site. Guard against nil Site (synthetic edges) and invalid positions.
+Removed in favour of the above: `isMockReceiver`, `receiverPkgPath`, `inferFromImports`, `posFile`, `posLine`.
 
 ---
 

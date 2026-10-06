@@ -1,6 +1,7 @@
 package walker
 
 import (
+	"go/token"
 	"go/types"
 
 	"golang.org/x/tools/go/ssa"
@@ -13,20 +14,30 @@ import (
 // external package. Follows the net/http/export_test.go pattern.
 var (
 	IsUbiquitousInterface = isUbiquitousInterface
-	IsMockMethod          = isMockMethod
-	IsMockReceiver        = isMockReceiver
-	ReceiverTypesPkg      = receiverTypesPkg
+	CalleePkg             = calleePkg
+	MergeByPosition       = mergeByPosition
 )
 
+// Hit exposes the internal hit type for merge tests.
+type Hit = hit
+
+// NewHit builds a hit at pos.
+func NewHit(call trawl.ExternalCall, pos token.Pos) Hit {
+	return hit{call: call, pos: pos}
+}
+
 // InferFromTypesPkg wraps the unexported (*Walker).inferFromTypesPkg for
-// testing. It constructs a Walker with no graph, the given detector, and
-// empty module path.
+// testing. It constructs a Walker with no graph and the given detector.
 func InferFromTypesPkg(det detector.Detector, pkg *types.Package) trawl.ServiceType {
-	w := &Walker{det: det}
-	return w.inferFromTypesPkg(pkg)
+	return New(nil, det, Options{}).inferFromTypesPkg(pkg)
 }
 
 // InterfaceMethodLabel wraps the unexported interfaceMethodLabel for testing.
 func InterfaceMethodLabel(cc *ssa.CallCommon) string {
 	return interfaceMethodLabel(cc)
+}
+
+// InModule wraps the unexported (*Walker).inModule for testing.
+func InModule(module, pkgPath string) bool {
+	return New(nil, nil, Options{Module: module}).inModule(pkgPath)
 }

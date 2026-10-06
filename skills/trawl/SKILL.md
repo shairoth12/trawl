@@ -10,15 +10,16 @@ description: >
   map from any Go function. Invoke proactively when the user asks about Go service
   dependencies, external calls, mocking strategy, or what services a Go component
   depends on.
-compatibility: Requires trawl CLI (go install github.com/shairoth12/trawl/cmd/trawl@latest) and Go 1.25+. Target package must compile and have dependencies available.
+compatibility: Requires trawl CLI (go install github.com/shairoth12/trawl/cmd/trawl@latest) and Go 1.26+ (Go 1.21+ downloads it automatically during install). Target package must compile and have dependencies available.
 metadata:
   author: shairoth12
-  version: 1.1.0
+  version: 1.2.0
 ---
 
 > Note: trawl reads source code — it does NOT instrument at runtime. It cannot detect
-> calls hidden behind `os.Exec` or string-based dynamic dispatch. Use `--algo cha` for
-> reflection-based DI frameworks (dig, fx, wire).
+> calls hidden behind `os.Exec` or string-based dynamic dispatch. The default VTA handles
+> reflection-based DI (dig, fx) by falling back to CHA; use `--algo cha` only when
+> `interface_dispatch` records remain.
 
 ---
 
@@ -40,11 +41,12 @@ occurrence listed separately so each can be individually mocked.
 User says: *"What needs to be mocked to test ProcessPayment? The payment service uses dig for DI."*
 
 ```bash
-trawl --pkg ./internal/payment --entry ProcessPayment --algo cha --scope ./...
+trawl --pkg ./internal/payment --entry ProcessPayment
 ```
 
 Result: Full list of external calls including those resolved through reflect-based DI
-wiring — every call site a test would need to stub.
+wiring — every call site a test would need to stub. If the output still has
+`interface_dispatch` records, rerun with `--algo cha`.
 
 ### Example 3: Audit with internal wrappers
 
@@ -88,7 +90,7 @@ Entry point formats trawl accepts:
 ## Step 2: Construct the command
 
 ```bash
-trawl --pkg <pattern> --entry <name> [--algo vta|rta|cha] [--scope <patterns>] [--dedup] [--stats] [--config trawl.yaml] [--log-level off|info|debug] [--log-file <path>] [--log-format text|json]
+trawl --pkg <pattern> --entry <name> [--algo vta|rta|cha] [--scope <patterns>] [--deps auto|none] [--dedup] [--stats] [--config trawl.yaml] [--log-level off|info|debug] [--log-file <path>] [--log-format text|json]
 ```
 
 **`--stats`** appends a `stats` object to the JSON output with package count, call graph size, DFS traversal counters, and phase durations. Use it when a run is unexpectedly slow or you need to understand analysis scope. `load_duration_ms` covers package load + SSA + call graph construction for all algorithms (including RTA); `walk_duration_ms` is typically `0` (sub-millisecond). The `stats` key is absent when the flag is not passed.
@@ -129,21 +131,23 @@ Does the package under --pkg directly instantiate its own concrete types?
 │         VTA traces value flow through constructors and assignments.
 │         Works when the wiring code is visible in the loaded packages.
 │
-├─ MAYBE, types are in a different package (constructor DI) → --algo vta --scope ./cmd/server
+├─ MAYBE, types are in a different package (constructor DI, wire) → --algo vta --scope ./cmd/server
 │         Load the wiring package too, so VTA can see value flow.
 │         Example: handler uses Store interface, NewServer(NewStore()) is in cmd/server.
+│         wire generates plain constructor code (wire_gen.go), so it is the same case.
 │
-├─ Uses reflection-based DI (dig, fx, wire) → --algo cha --scope ./...
-│         CHA resolves dispatch purely by structural type matching.
-│         It doesn't need to trace value flow, so it works through reflect.Call.
-│         Trade-off: over-approximates (may include types never wired at runtime).
+├─ Uses reflection-based DI (dig, fx) → --algo vta (default)
+│         An interface call with no value flow gets the CHA callees instead.
+│         If interface_dispatch records remain → --algo cha
+│         (VTA keeps its own callees where some value does flow).
+│         CHA trade-off: over-approximates (may include types never wired at runtime).
 │
 └─ Unsure, want broadest coverage → --algo cha --scope ./...
 ```
 
 Quick signals in the codebase that indicate DI framework use:
-- `dig.Provide`, `dig.Invoke`, `fx.Provide`, `fx.Options` → use CHA
-- `wire.Build`, `wire.NewSet` → use CHA
+- `dig.Provide`, `dig.Invoke`, `fx.Provide`, `fx.Options` → VTA; CHA if `interface_dispatch` remains
+- `wire.Build`, `wire.NewSet` → VTA + scope of the package with `wire_gen.go`
 - Constructor functions like `NewServer(deps ...)` passing interfaces → VTA + scope
 
 ---
@@ -161,6 +165,11 @@ target. It enriches the type universe that VTA and CHA can see.
 | Simple package, all types visible | (omit --scope) |
 
 When in doubt for CHA, `--scope ./...` loads the whole module. It's slower but catches everything.
+
+**Escalation path**: `--scope` is for *wiring* packages the target does not import.
+Same-module packages the target imports and dependency modules implementing the
+interfaces it calls are built automatically (`--deps auto`, the default) — do not
+add dependency modules to `--scope`. `--deps none` disables that for a baseline.
 
 ---
 
@@ -201,9 +210,13 @@ trawl --pkg ./cmd/server --entry HandleRequest --log-level off
 | `direct` | `high` | Import path matched a service indicator | Trust fully |
 | `mock_inference` | `medium` | Mock type detected; service inferred from its imports | Likely correct; note it's inferred |
 | `cross_module_inference` | `low` | External module; service type inferred from transitive imports | Treat as a hint; verify manually if it matters |
+| `cross_module_trace` | `high` (sometimes `low`) | A dependency's function body was walked to a real backend call; `file`/`line` are the module-side call, `call_chain` continues into the dependency | Trust `high`; this is the line to mock |
+| `interface_dispatch` | `high` or `low` | Interface call with no visible implementor; `high` when the interface's package is a configured indicator, `low` when inferred from its imports | `high`: trust; `low`: hint, the implementor may be bound by reflection |
 
 For most agent workflows: surface `high` and `medium` confidently, flag `low` confidence
-results as "inferred, not confirmed."
+results as "inferred, not confirmed." A `low` `service_type` is the first detected import of
+the interface's package and can name the wrong backend for a facade wrapping several
+services — report it as "an external call" unless another record confirms the type.
 
 ### Zero results — diagnosis checklist
 
@@ -215,6 +228,7 @@ Before reporting "no external calls found," check:
 3. Is the algo wrong? If the package uses interfaces and DI, VTA may miss the dispatch. Try `--algo cha --scope ./...`.
 4. Is scope missing? If the package only defines an interface and never instantiates it, VTA sees no concrete types. Add `--scope`.
 5. Did the entry point resolve correctly? The `entry_point` field in output shows the fully-qualified SSA name — verify it looks right.
+6. Run with `--stats` and check `stats.unresolved_invokes` — non-zero means an interface call had no implementor in the program; `stats.dependency_packages` shows what was auto-built. Compare against `--deps none` to see what the dependency bodies contributed.
 
 ---
 
@@ -261,6 +275,15 @@ Then pass `--config trawl.yaml` to the command.
 AND calls through the underlying library are both detected as `resolved_via: direct`
 with `confidence: high`.
 
+Two cases where **not** adding an entry is the right call:
+- The wrapper wraps **several backends** (one type with a Postgres method and an HTTP
+  method). An indicator labels every method the same; without it trawl walks into each
+  method and reports the real backend per call.
+- trawl can already **see the implementation** (same module, or a dependency package
+  implementing an interface your code calls). It reports the backend as
+  `cross_module_trace / high` without config. Add an entry only for a custom label or when
+  the implementation is bound by reflection.
+
 ---
 
 ## Step 8: Escalation path
@@ -278,8 +301,9 @@ When results seem incomplete, try in this order:
 ## Troubleshooting
 
 **`warning: trawl was built with goX.Y but host toolchain is goZ.W`**
-Toolchain mismatch — output may be empty or wrong.
-Fix: `go install github.com/shairoth12/trawl/cmd/trawl@latest`
+The `go` on PATH is a newer Go release than the one trawl was built with, so loading may fail or the output may be
+empty. (An older `go` on PATH is fine and gives no warning.)
+Fix: rebuild trawl with that newer `go`: `go install github.com/shairoth12/trawl/cmd/trawl@latest`
 
 **`resolving entry point "Foo": function not found`**
 Entry point name doesn't match any function in the package.

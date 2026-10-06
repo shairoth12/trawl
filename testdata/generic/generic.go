@@ -6,6 +6,8 @@ package generic
 import (
 	"context"
 	"database/sql"
+
+	"github.com/shairoth12/trawl/testdata/mock"
 )
 
 // Cache is a generic interface with Get and Set methods.
@@ -30,7 +32,7 @@ func (r *RealCache[T]) Set(ctx context.Context, key string, val T) error {
 }
 
 // MockCache is a no-op mock that satisfies Cache[T].
-type MockCache[T any] struct{}
+type MockCache[T any] struct{ mock.Mock }
 
 func (m *MockCache[T]) Get(ctx context.Context, key string) (T, error) {
 	var zero T

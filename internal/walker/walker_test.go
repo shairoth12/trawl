@@ -36,7 +36,7 @@ func moduleRoot(t *testing.T) string {
 func walkFixture(t *testing.T, pattern, entry string) []trawl.ExternalCall {
 	t.Helper()
 	root := moduleRoot(t)
-	result, err := analysis.Load(t.Context(), root, pattern, analysis.AlgoVTA)
+	result, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: pattern, Algo: analysis.AlgoVTA})
 	if err != nil {
 		t.Fatalf("analysis.Load(%q): %v", pattern, err)
 	}
@@ -45,7 +45,7 @@ func walkFixture(t *testing.T, pattern, entry string) []trawl.ExternalCall {
 		t.Fatalf("analysis.Resolve(%q): %v", entry, err)
 	}
 	det := detector.New(nil)
-	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
+	w := walker.New(result.Graph, det, walker.Options{Module: result.Module, Fset: result.Prog.Fset})
 	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entry, err)
@@ -183,7 +183,7 @@ func TestWalk_EntryNotInGraph(t *testing.T) {
 	t.Parallel()
 
 	root := moduleRoot(t)
-	result, err := analysis.Load(t.Context(), root, "./testdata/basic", analysis.AlgoVTA)
+	result, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: "./testdata/basic", Algo: analysis.AlgoVTA})
 	if err != nil {
 		t.Fatalf("analysis.Load: %v", err)
 	}
@@ -193,13 +193,13 @@ func TestWalk_EntryNotInGraph(t *testing.T) {
 	}
 
 	// Build a fresh empty graph so that fn is absent.
-	emptyResult, err := analysis.Load(t.Context(), root, "./testdata/chain", analysis.AlgoVTA)
+	emptyResult, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: "./testdata/chain", Algo: analysis.AlgoVTA})
 	if err != nil {
 		t.Fatalf("analysis.Load(chain): %v", err)
 	}
 
 	det := detector.New(nil)
-	w := walker.New(emptyResult.Graph, det, emptyResult.Module, emptyResult.Prog.Fset, nil)
+	w := walker.New(emptyResult.Graph, det, walker.Options{Module: emptyResult.Module, Fset: emptyResult.Prog.Fset})
 	_, _, err = w.Walk(fn)
 	if err == nil {
 		t.Fatalf("Walk(fn from different graph) = nil error, want an error about entry not found")
@@ -212,7 +212,7 @@ func TestWalk_RTA(t *testing.T) {
 	// Confirm the RTA pipeline: Load with AlgoRTA leaves Graph nil; the caller
 	// must resolve an entry point and call rta.Analyze to produce the graph.
 	root := moduleRoot(t)
-	result, err := analysis.Load(t.Context(), root, "./testdata/basic", analysis.AlgoRTA)
+	result, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: "./testdata/basic", Algo: analysis.AlgoRTA})
 	if err != nil {
 		t.Fatalf("analysis.Load(AlgoRTA): %v", err)
 	}
@@ -229,7 +229,7 @@ func TestWalk_RTA(t *testing.T) {
 	graph := rtaResult.CallGraph
 
 	det := detector.New(nil)
-	w := walker.New(graph, det, result.Module, result.Prog.Fset, nil)
+	w := walker.New(graph, det, walker.Options{Module: result.Module, Fset: result.Prog.Fset})
 	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(HandleRequest, RTA): %v", err)
@@ -307,6 +307,14 @@ func TestIsUbiquitousInterface(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "io_ReadCloser",
+			typ: func(t *testing.T) types.Type {
+				t.Helper()
+				return importType(t, "io", "ReadCloser")
+			},
+			want: true,
+		},
+		{
 			name: "io_Writer",
 			typ: func(t *testing.T) types.Type {
 				t.Helper()
@@ -355,7 +363,7 @@ func TestIsMockMethod(t *testing.T) {
 	t.Parallel()
 
 	root := moduleRoot(t)
-	result, err := analysis.Load(t.Context(), root, "./testdata/mockfilter", analysis.AlgoCHA)
+	result, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: "./testdata/mockfilter", Algo: analysis.AlgoCHA})
 	if err != nil {
 		t.Fatalf("analysis.Load(mockfilter, CHA): %v", err)
 	}
@@ -366,7 +374,9 @@ func TestIsMockMethod(t *testing.T) {
 		want    bool
 	}
 	cases := []fnCase{
-		{pattern: ".MockStore).Get", want: true},
+		{pattern: ".MockStore).Get", want: true},           // embeds mock.Mock
+		{pattern: ".Mockstore).Get", want: true},           // has a *gomock.Controller field
+		{pattern: ".MockingbirdClient).Sing", want: false}, // real type, name starts with "Mock"
 		{pattern: ".RealStore).Get", want: false},
 		{pattern: ".HandleMock", want: false},
 	}
@@ -386,13 +396,9 @@ func TestIsMockMethod(t *testing.T) {
 		}
 		t.Run(tc.pattern, func(t *testing.T) {
 			t.Parallel()
-			got := walker.IsMockMethod(tc.fn)
+			got := trawl.IsMockMethod(tc.fn.Signature)
 			if got != tc.want {
-				t.Errorf("IsMockMethod(%s) = %v, want %v", tc.fn, got, tc.want)
-			}
-			gotRecv := walker.IsMockReceiver(tc.fn)
-			if gotRecv != tc.want {
-				t.Errorf("IsMockReceiver(%s) = %v, want %v", tc.fn, gotRecv, tc.want)
+				t.Errorf("IsMockMethod(%s.Signature) = %v, want %v", tc.fn, got, tc.want)
 			}
 		})
 	}
@@ -403,7 +409,7 @@ func TestIsMockMethod(t *testing.T) {
 func walkFixtureCHA(t *testing.T, pattern, entry string, indicators []trawl.Indicator) []trawl.ExternalCall {
 	t.Helper()
 	root := moduleRoot(t)
-	result, err := analysis.Load(t.Context(), root, pattern, analysis.AlgoCHA)
+	result, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: pattern, Algo: analysis.AlgoCHA})
 	if err != nil {
 		t.Fatalf("analysis.Load(%q, CHA): %v", pattern, err)
 	}
@@ -412,7 +418,7 @@ func walkFixtureCHA(t *testing.T, pattern, entry string, indicators []trawl.Indi
 		t.Fatalf("analysis.Resolve(%q): %v", entry, err)
 	}
 	det := detector.New(indicators)
-	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
+	w := walker.New(result.Graph, det, walker.Options{Module: result.Module, Fset: result.Prog.Fset})
 	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entry, err)
@@ -447,7 +453,7 @@ func TestWalk_GenericInterface_DirectDetection(t *testing.T) {
 func TestWalk_StatsNonZero(t *testing.T) {
 	// Not parallel: analysis.Load shells out to the go toolchain.
 	root := moduleRoot(t)
-	result, err := analysis.Load(t.Context(), root, "./testdata/basic", analysis.AlgoVTA)
+	result, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: "./testdata/basic", Algo: analysis.AlgoVTA})
 	if err != nil {
 		t.Fatalf("analysis.Load: %v", err)
 	}
@@ -456,7 +462,7 @@ func TestWalk_StatsNonZero(t *testing.T) {
 		t.Fatalf("analysis.Resolve: %v", err)
 	}
 	det := detector.New(nil)
-	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
+	w := walker.New(result.Graph, det, walker.Options{Module: result.Module, Fset: result.Prog.Fset})
 	_, stats, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
@@ -472,7 +478,7 @@ func TestWalk_StatsNonZero(t *testing.T) {
 func TestWalk_StatsReset(t *testing.T) {
 	// Not parallel: analysis.Load shells out to the go toolchain.
 	root := moduleRoot(t)
-	result, err := analysis.Load(t.Context(), root, "./testdata/basic", analysis.AlgoVTA)
+	result, err := analysis.Load(t.Context(), analysis.Options{Dir: root, Pattern: "./testdata/basic", Algo: analysis.AlgoVTA})
 	if err != nil {
 		t.Fatalf("analysis.Load: %v", err)
 	}
@@ -481,7 +487,7 @@ func TestWalk_StatsReset(t *testing.T) {
 		t.Fatalf("analysis.Resolve: %v", err)
 	}
 	det := detector.New(nil)
-	w := walker.New(result.Graph, det, result.Module, result.Prog.Fset, nil)
+	w := walker.New(result.Graph, det, walker.Options{Module: result.Module, Fset: result.Prog.Fset})
 
 	_, stats1, err := w.Walk(fn)
 	if err != nil {
