@@ -31,9 +31,9 @@ type invokedInterfaces map[string][]*types.Named
 // path). external is packages from other modules that declare a concrete,
 // non-mock type implementing an interface called by the module (round 1) or
 // by the packages picked in the previous round (rounds 2..maxSelectionRounds),
-// ordered by round then path. Standard-library and indicator packages are
-// never picked.
-func selectDependencyPkgs(initial []*packages.Package, modulePath string, isIndicator func(string) bool) (modulePkgs, external []*packages.Package) {
+// ordered by round then path. Standard-library packages (the paths in
+// stdlib, see stdlibPkgs) and indicator packages are never picked.
+func selectDependencyPkgs(initial []*packages.Package, modulePath string, isIndicator func(string) bool, stdlib map[string]bool) (modulePkgs, external []*packages.Package) {
 	isInitial := make(map[*packages.Package]bool, len(initial))
 	for _, p := range initial {
 		isInitial[p] = true
@@ -54,7 +54,7 @@ func selectDependencyPkgs(initial []*packages.Package, modulePath string, isIndi
 			}
 			return
 		}
-		if trawl.IsStandardLibrary(p.PkgPath) || (isIndicator != nil && isIndicator(p.PkgPath)) {
+		if stdlib[p.PkgPath] || (isIndicator != nil && isIndicator(p.PkgPath)) {
 			return
 		}
 		unpickedDeps = append(unpickedDeps, p)
@@ -63,7 +63,7 @@ func selectDependencyPkgs(initial []*packages.Package, modulePath string, isIndi
 
 	var cache typeutil.MethodSetCache
 	for round := 0; round < maxSelectionRounds && len(toScan) > 0 && len(unpickedDeps) > 0; round++ {
-		ifaces := collectInvokedInterfaces(toScan)
+		ifaces := collectInvokedInterfaces(toScan, stdlib)
 		if len(ifaces) == 0 {
 			break
 		}
@@ -90,12 +90,13 @@ func sortByPath(pkgs []*packages.Package) {
 // scanned packages call a method on. The interface is taken from the method's
 // receiver type, so a call through a struct that embeds the interface counts
 // as a call on the interface.
-func collectInvokedInterfaces(toScan []*packages.Package) invokedInterfaces {
+func collectInvokedInterfaces(toScan []*packages.Package, stdlib map[string]bool) invokedInterfaces {
 	out := invokedInterfaces{}
 	seen := map[*types.Named]bool{}
 	for _, p := range toScan {
 		for _, sel := range p.TypesInfo.Selections {
-			if sel.Kind() != types.MethodVal {
+			// MethodExpr covers I.M(x); MethodVal covers x.M() and x.M.
+			if k := sel.Kind(); k != types.MethodVal && k != types.MethodExpr {
 				continue
 			}
 			fn, ok := sel.Obj().(*types.Func)
@@ -108,7 +109,7 @@ func collectInvokedInterfaces(toScan []*packages.Package) invokedInterfaces {
 			}
 			named = named.Origin()
 			obj := named.Obj()
-			if obj.Pkg() == nil || trawl.IsStandardLibrary(obj.Pkg().Path()) || seen[named] {
+			if obj.Pkg() == nil || stdlib[obj.Pkg().Path()] || seen[named] {
 				continue
 			}
 			iface, ok := named.Underlying().(*types.Interface)

@@ -396,9 +396,9 @@ func TestIsMockMethod(t *testing.T) {
 		}
 		t.Run(tc.pattern, func(t *testing.T) {
 			t.Parallel()
-			got := walker.IsMockMethod(tc.fn)
+			got := trawl.IsMockMethod(tc.fn.Signature)
 			if got != tc.want {
-				t.Errorf("IsMockMethod(%s) = %v, want %v", tc.fn, got, tc.want)
+				t.Errorf("IsMockMethod(%s.Signature) = %v, want %v", tc.fn, got, tc.want)
 			}
 		})
 	}

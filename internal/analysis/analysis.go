@@ -67,6 +67,10 @@ type LoadResult struct {
 	// PackagesAnalyzed is the number of packages with built bodies: the
 	// --pkg/--scope packages plus len(DependencyPkgs).
 	PackagesAnalyzed int
+
+	// Stdlib is the set of standard-library import paths among the loaded
+	// packages, decided by provenance (see stdlibPkgs), not by path alone.
+	Stdlib map[string]bool
 }
 
 // DependencyPolicy selects which packages, beyond those named by --pkg and
@@ -173,11 +177,12 @@ func Load(ctx context.Context, opts Options) (*LoadResult, error) {
 	packages.Visit(pkgs, func(*packages.Package) bool { pkgCount++; return true }, nil)
 
 	modulePath := modulePathOf(pkgs, opts.Dir, opts.Pattern)
+	stdlib := stdlibPkgs(pkgs)
 
 	var deps []*packages.Package
 	var skipped int
 	if opts.DependencyPolicy == DependencyAuto {
-		modulePkgs, external := selectDependencyPkgs(pkgs, modulePath, opts.IsIndicator)
+		modulePkgs, external := selectDependencyPkgs(pkgs, modulePath, opts.IsIndicator, stdlib)
 		limit := opts.MaxDependencyPkgs
 		if limit <= 0 {
 			limit = DefaultMaxDependencyPkgs
@@ -195,8 +200,11 @@ func Load(ctx context.Context, opts Options) (*LoadResult, error) {
 		depPaths = append(depPaths, p.PkgPath)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	prog, ssaPkgs := createProgram(pkgs, withBodies, ssa.InstantiateGenerics)
-	if err := buildProgram(prog); err != nil {
+	if err := buildProgram(ctx, prog); err != nil {
 		return nil, err
 	}
 
@@ -213,9 +221,26 @@ func Load(ctx context.Context, opts Options) (*LoadResult, error) {
 		DependencyPkgs:        depPaths,
 		DependencyPkgsSkipped: skipped,
 		PackagesAnalyzed:      len(ssaPkgs) + len(depPaths),
+		Stdlib:                stdlib,
 	}
 
 	return buildGraph(ctx, result, opts.Algo, opts.Pattern)
+}
+
+// stdlibPkgs returns the import paths of the standard-library packages among
+// pkgs and their dependencies. go/packages gives every package that belongs
+// to a module a Module and gives standard-library packages none, so a module
+// path without a dot ("module svc") is not taken for the standard library.
+// In GOPATH mode no package has a Module, so the path rule alone decides and
+// dotless GOPATH packages still count as standard library.
+func stdlibPkgs(pkgs []*packages.Package) map[string]bool {
+	out := map[string]bool{}
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Module == nil && trawl.IsStandardLibrary(p.PkgPath) {
+			out[p.PkgPath] = true
+		}
+	})
+	return out
 }
 
 // createProgram is a copy of ssautil.Packages with one change: ssautil gives
@@ -257,14 +282,20 @@ func createProgram(initial []*packages.Package, withBodies map[*packages.Package
 // built by this function, at most GOMAXPROCS at a time, with any panic turned
 // into an error. Package.Build is safe to call this way: it may run
 // concurrently for different packages and does nothing the second time.
-func buildProgram(prog *ssa.Program) error {
+//
+// When ctx is cancelled no more builds are started; builds already running
+// cannot be interrupted, so buildProgram waits for them and returns ctx.Err().
+func buildProgram(ctx context.Context, prog *ssa.Program) error {
 	pkgs := prog.AllPackages()
 	errs := make([]error, len(pkgs))
 	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
 	var wg sync.WaitGroup
 	for i, p := range pkgs {
-		wg.Add(1)
 		sem <- struct{}{}
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -274,6 +305,9 @@ func buildProgram(prog *ssa.Program) error {
 		}()
 	}
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return errors.Join(errs...)
 }
 
@@ -392,7 +426,7 @@ func buildGraph(ctx context.Context, result *LoadResult, algo Algo, pattern stri
 	if graph == nil {
 		return nil, fmt.Errorf("vta.CallGraph returned nil for pattern %q", pattern)
 	}
-	fillEmptyInvokes(graph, initial)
+	fillEmptyInvokes(graph, initial, result.Stdlib)
 	result.Graph = graph
 
 	return result, nil
@@ -404,17 +438,22 @@ func buildGraph(ctx context.Context, result *LoadResult, algo Algo, pattern stri
 // matches by type and finds the implementations, including the ones in
 // dependency packages whose bodies were built for this. Interfaces declared in
 // the standard library, and error, are left alone: they match too many types
-// and no dependency bodies are built for them.
-func fillEmptyInvokes(graph, initial *callgraph.Graph) {
+// and no dependency bodies are built for them. A call whose only VTA callees
+// are mocks counts as empty too, the same rule the walker uses: a mock set in
+// non-test code hides the real, injected implementation.
+func fillEmptyInvokes(graph, initial *callgraph.Graph, stdlib map[string]bool) {
 	resolved := map[ssa.CallInstruction]bool{}
 	for _, n := range graph.Nodes {
 		for _, edge := range n.Out {
+			if edge.Callee == nil || edge.Callee.Func == nil || trawl.IsMockMethod(edge.Callee.Func.Signature) {
+				continue
+			}
 			resolved[edge.Site] = true
 		}
 	}
 	for fn, n := range initial.Nodes {
 		for _, edge := range n.Out {
-			if fn == nil || edge.Site == nil || resolved[edge.Site] || !invokesNonStdlibInterface(edge.Site) {
+			if fn == nil || edge.Site == nil || resolved[edge.Site] || !invokesNonStdlibInterface(edge.Site, stdlib) {
 				continue
 			}
 			callgraph.AddEdge(graph.CreateNode(fn), edge.Site, graph.CreateNode(edge.Callee.Func))
@@ -424,7 +463,7 @@ func fillEmptyInvokes(graph, initial *callgraph.Graph) {
 
 // invokesNonStdlibInterface reports whether site calls a method on a named
 // interface declared outside the standard library.
-func invokesNonStdlibInterface(site ssa.CallInstruction) bool {
+func invokesNonStdlibInterface(site ssa.CallInstruction, stdlib map[string]bool) bool {
 	cc := site.Common()
 	if !cc.IsInvoke() {
 		return false
@@ -433,7 +472,7 @@ func invokesNonStdlibInterface(site ssa.CallInstruction) bool {
 	if !ok || named.Obj().Pkg() == nil {
 		return false
 	}
-	return !trawl.IsStandardLibrary(named.Obj().Pkg().Path())
+	return !stdlib[named.Obj().Pkg().Path()]
 }
 
 // resolveSSAPkg selects the SSA package to use as the analysis entry point.

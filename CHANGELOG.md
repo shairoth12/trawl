@@ -18,13 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `resolved_via: interface_dispatch` — an interface call that resolved to no
   implementation; classified by the package that declares the interface (high
   when that package is an indicator, low when guessed from its imports)
+- Consumers that check `resolved_via` against a fixed list must accept
+  `cross_module_trace` and `interface_dispatch`
 - Stats fields `packages_analyzed`, `dependency_packages`, `unresolved_invokes`
 - Two-module fixture `testdata/crossmodule` (analyzed module + dependency module)
 
 ### Changed
 
-- VTA: an interface call that VTA resolves to nothing (typical for dig/fx
-  injection) gets the CHA callees instead, so the walk enters the
+- VTA: an interface call that VTA resolves to nothing, or only to mocks
+  (typical for dig/fx injection), gets the CHA callees instead, so the walk enters the
   implementation and its dependency body; interfaces declared in the standard
   library are not filled. Under VTA such calls move from `interface_dispatch`
   to `cross_module_trace`, and `unresolved_invokes` drops
@@ -46,12 +48,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `io.ReadCloser`, `io.WriteCloser`, `io.ReadWriteCloser` join the list of very
   common interfaces that are ignored
 - `analysis.Load` takes an `Options` struct; `walker.New` takes `walker.Options`
+- Standard-library packages are recognized by the loader's module data, not by
+  the path alone, so a module whose path has no dot (`module svc`) is treated
+  as your code; in GOPATH mode the path rule still decides
 
 ### Fixed
 
 - Interface calls whose implementation lives in a dependency module resolve
   without adding the dependency to `--scope`
 - SSA build panics in dependency packages surface as errors instead of crashing
+- `--timeout` also stops the SSA build: no new package builds start after it
+  expires, and trawl returns once the running ones finish
+- A package whose path only starts with the module path (`example.com/app-extra`
+  for module `example.com/app`) is no longer treated as part of the module
 
 ## [0.2.0] - 2026-04-10
 

@@ -77,7 +77,7 @@ func pipelineOpts(t *testing.T, opts analysis.Options, entryName string, indicat
 	}
 
 	det := detector.New(indicators)
-	w := walker.New(graph, det, walker.Options{Module: loadResult.Module, DependencyPkgs: loadResult.DependencyPkgs, Fset: loadResult.Prog.Fset})
+	w := walker.New(graph, det, walker.Options{Module: loadResult.Module, DependencyPkgs: loadResult.DependencyPkgs, Stdlib: loadResult.Stdlib, Fset: loadResult.Prog.Fset})
 	calls, _, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entryName, err)
@@ -423,5 +423,35 @@ func TestIntegration_CrossModule_CHA_OneRecordForSourceCall(t *testing.T) {
 		if strings.Contains(name, "MockStore") {
 			t.Errorf("mock type name in output: %q", name)
 		}
+	}
+}
+
+func TestIntegration_CrossModule_VTA_MockOnlySiteFallsBackToCHA(t *testing.T) {
+	t.Parallel()
+	// VTA resolves MockedHandler.Store.Get only to the mock (set by
+	// NewMockedHandler). The mock edge must not count as resolved, so the CHA
+	// edge to (*sqlStore).Get is added and traced into the dependency.
+	out := pipelineInDir(t, crossmoduleSvcDir(t), ".", "HandleMockedGet", nil, analysis.AlgoVTA)
+	if len(out.ExternalCalls) != 1 {
+		t.Fatalf("external calls = %d, want 1: %+v", len(out.ExternalCalls), out.ExternalCalls)
+	}
+	got := out.ExternalCalls[0]
+	if got.ResolvedVia != trawl.ResolvedViaCrossModuleTrace || got.ServiceType != trawl.ServiceTypePostgres {
+		t.Errorf("record = %+v, want cross_module_trace/POSTGRES", got)
+	}
+}
+
+func TestIntegration_DotlessModule_VTA_FallsBackToCHA(t *testing.T) {
+	t.Parallel()
+	// The module path "dotless" has no dot, like stdlib paths. Its Store
+	// interface must still get the CHA fallback, so the call reaches impl.SQL.
+	dir := filepath.Join(moduleRoot(t), "testdata", "dotless")
+	out := pipelineInDir(t, dir, ".", "Handle", nil, analysis.AlgoVTA)
+	if len(out.ExternalCalls) != 1 {
+		t.Fatalf("external calls = %d, want 1: %+v", len(out.ExternalCalls), out.ExternalCalls)
+	}
+	got := out.ExternalCalls[0]
+	if got.ServiceType != trawl.ServiceTypePostgres || got.ResolvedVia != trawl.ResolvedViaDirect {
+		t.Errorf("record = %+v, want POSTGRES/direct", got)
 	}
 }

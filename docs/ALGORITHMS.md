@@ -60,7 +60,7 @@ vta.CallGraph(allFunctions, chaGraph)  ← refinement: prune by value flow
 fillEmptyInvokes(vtaGraph, chaGraph)   ← interface calls left with no callee get the CHA ones
 ```
 
-**CHA fallback**: VTA gives an interface call no callees when no value visibly reaches it, which is what reflection-based DI (dig, fx) looks like. For those calls only, trawl copies the CHA callees into the VTA graph, so the walk still enters the implementation (and the dependency bodies built for it). Calls on interfaces declared in the standard library (and `error`) are not filled: CHA would match every implementation in the program. Calls where VTA found at least one callee are left as VTA found them.
+**CHA fallback**: VTA gives an interface call no callees (or only mock callees) when no real value visibly reaches it, which is what reflection-based DI (dig, fx) looks like. For those calls only, trawl copies the CHA callees into the VTA graph, so the walk still enters the implementation (and the dependency bodies built for it). Calls on interfaces declared in the standard library (and `error`) are not filled: CHA would match every implementation in the program. Calls where VTA found at least one callee are left as VTA found them.
 
 **When to use**:
 - Default choice for most codebases
@@ -152,7 +152,7 @@ Interface calls that still have no concrete callee are reported as `interface_di
 - **Three rounds only.** An interface chain deeper than three hops inside dependencies is not traced; the last hop is reported as `interface_dispatch` instead.
 - **Plain calls into external packages without bodies are skipped.** Only calls made through an interface get the imports-based guess. A direct `lib.DoThing()` into a package that has no bodies and is not an indicator produces nothing.
 - **`nodes_visited` over-counts dependency functions.** A dependency function is counted again each time it is reached from a different call in your code.
-- **Dotless module paths look like standard library.** A package is treated as standard library when the first element of its import path has no dot (Go's own rule). A module declared as `module svc` is therefore mistaken for standard library: its packages never get bodies and its interfaces are not reported. Any module path a registry can serve contains a dot, so only local or GOPATH-style modules are affected.
+- **Dotless GOPATH paths look like standard library.** A package is standard library when the loader reports no module for it and the first element of its import path has no dot (Go's own rule). In module mode every non-stdlib package has a module, so `module svc` is handled correctly. In GOPATH mode no package has a module, so a dotless GOPATH package is mistaken for standard library: it never gets a body and its interfaces are not reported.
 
 ## `--scope` Flag
 

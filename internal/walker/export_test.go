@@ -14,7 +14,6 @@ import (
 // external package. Follows the net/http/export_test.go pattern.
 var (
 	IsUbiquitousInterface = isUbiquitousInterface
-	IsMockMethod          = isMockMethod
 	CalleePkg             = calleePkg
 	MergeByPosition       = mergeByPosition
 )
@@ -36,4 +35,9 @@ func InferFromTypesPkg(det detector.Detector, pkg *types.Package) trawl.ServiceT
 // InterfaceMethodLabel wraps the unexported interfaceMethodLabel for testing.
 func InterfaceMethodLabel(cc *ssa.CallCommon) string {
 	return interfaceMethodLabel(cc)
+}
+
+// InModule wraps the unexported (*Walker).inModule for testing.
+func InModule(module, pkgPath string) bool {
+	return New(nil, nil, Options{Module: module}).inModule(pkgPath)
 }

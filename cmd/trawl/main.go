@@ -216,7 +216,7 @@ func run(args []string, stdout io.Writer) error {
 	// both phases complete.
 	loadDuration := time.Since(t0)
 
-	w := walker.New(graph, det, walker.Options{Module: loadResult.Module, DependencyPkgs: loadResult.DependencyPkgs, Fset: loadResult.Prog.Fset, Log: log})
+	w := walker.New(graph, det, walker.Options{Module: loadResult.Module, DependencyPkgs: loadResult.DependencyPkgs, Stdlib: loadResult.Stdlib, Fset: loadResult.Prog.Fset, Log: log})
 	log.Info("walking_graph", "entry", fn.String())
 	t1 := time.Now()
 	calls, walkStats, err := w.Walk(fn)

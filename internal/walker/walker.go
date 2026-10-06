@@ -35,10 +35,11 @@ type WalkStats struct {
 
 // Options configures a Walker.
 type Options struct {
-	Module         string         // module path prefix, e.g. "github.com/foo/bar" (LoadResult.Module); "" means every package counts as yours
-	DependencyPkgs []string       // packages with built bodies the walk may enter (LoadResult.DependencyPkgs)
-	Fset           *token.FileSet // resolves source positions (LoadResult.Prog.Fset)
-	Log            *slog.Logger   // debug-level edge decisions; nil disables logging
+	Module         string          // module path prefix, e.g. "github.com/foo/bar" (LoadResult.Module); "" means every package counts as yours
+	DependencyPkgs []string        // packages with built bodies the walk may enter (LoadResult.DependencyPkgs)
+	Fset           *token.FileSet  // resolves source positions (LoadResult.Prog.Fset)
+	Log            *slog.Logger    // debug-level edge decisions; nil disables logging
+	Stdlib         map[string]bool // standard-library import paths (LoadResult.Stdlib); nil falls back to trawl.IsStandardLibrary
 }
 
 // Walker traverses a call graph from an entry point function and reports every
@@ -52,6 +53,7 @@ type Walker struct {
 	det        detector.Detector
 	module     string
 	deps       map[string]bool
+	stdlib     map[string]bool
 	fset       *token.FileSet
 	log        *slog.Logger
 	inferCache map[*types.Package]trawl.ServiceType // guesses from imports depend only on the detector; never reset
@@ -96,6 +98,7 @@ func New(graph *callgraph.Graph, d detector.Detector, opts Options) *Walker {
 		det:        d,
 		module:     opts.Module,
 		deps:       deps,
+		stdlib:     opts.Stdlib,
 		fset:       opts.Fset,
 		log:        log,
 		inferCache: map[*types.Package]trawl.ServiceType{},
@@ -170,7 +173,7 @@ func (w *Walker) dfs(node *callgraph.Node, chain []string, cross *crossing) []hi
 		}
 		next := appendCopy(chain, fn.String())
 
-		if isMockMethod(fn) {
+		if trawl.IsMockMethod(fn.Signature) {
 			hits = append(hits, w.mockHits(edge, pkgPath, typesPkg, chain, cross)...)
 			continue
 		}
@@ -285,7 +288,7 @@ func unresolvedInvokes(node *callgraph.Node) []ssa.CallInstruction {
 	}
 	resolved := make(map[ssa.CallInstruction]bool, len(node.Out))
 	for _, e := range node.Out {
-		if fn := calleeFunc(e); e.Site != nil && fn != nil && !isMockMethod(fn) {
+		if fn := calleeFunc(e); e.Site != nil && fn != nil && !trawl.IsMockMethod(fn.Signature) {
 			resolved[e.Site] = true
 		}
 	}
@@ -315,7 +318,7 @@ func (w *Walker) unresolvedHit(site ssa.CallInstruction, chain []string, cross *
 		return hit{}, false // builtin error, type parameters, ubiquitous interfaces
 	}
 	path := named.Obj().Pkg().Path()
-	if trawl.IsStandardLibrary(path) {
+	if w.isStdlib(path) {
 		return hit{}, false
 	}
 	if !w.countedSites[site] {
@@ -357,10 +360,21 @@ func calleePkg(fn *ssa.Function) (string, *types.Package) {
 	return "", nil
 }
 
-// inModule reports whether pkgPath is inside the analyzed module. An empty
-// module (GOPATH workspace) places every package inside.
+// isStdlib reports whether pkgPath is a standard-library package, by
+// Options.Stdlib when it was given and by the path rule otherwise.
+func (w *Walker) isStdlib(pkgPath string) bool {
+	if w.stdlib == nil {
+		return trawl.IsStandardLibrary(pkgPath)
+	}
+	return w.stdlib[pkgPath]
+}
+
+// inModule reports whether pkgPath is inside the analyzed module: the module
+// path itself or a path below it, so "example.com/app-extra" is not inside
+// "example.com/app". An empty module (GOPATH workspace) places every package
+// inside.
 func (w *Walker) inModule(pkgPath string) bool {
-	return w.module == "" || strings.HasPrefix(pkgPath, w.module)
+	return w.module == "" || pkgPath == w.module || strings.HasPrefix(pkgPath, w.module+"/")
 }
 
 // calleeFunc returns the callee function of edge, or nil when the callee node
@@ -458,15 +472,6 @@ func isUbiquitousInterface(t types.Type) bool {
 		return obj.Name() == "error"
 	}
 	return ubiquitousInterfaces[obj.Pkg().Path()+"."+obj.Name()]
-}
-
-// isMockMethod reports whether fn is a method on a generated mock (see
-// trawl.IsMock). Mocks in production packages satisfy interfaces, so the call
-// graph routes interface calls through them, but their bodies only record the
-// call for the test.
-func isMockMethod(fn *ssa.Function) bool {
-	recv := fn.Signature.Recv()
-	return recv != nil && trawl.IsMock(recv.Type())
 }
 
 // inferFromTypesPkg checks whether typesPkg imports a package the detector

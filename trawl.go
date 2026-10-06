@@ -89,9 +89,11 @@ const (
 	ConfidenceLow    = "low"
 )
 
-// IsStandardLibrary reports whether importPath belongs to the Go standard
-// library. Standard library paths have no dot in their first element
-// ("net/http", "fmt"); module paths do ("github.com/x/y").
+// IsStandardLibrary reports whether importPath looks like a Go standard
+// library path: no dot in its first element ("net/http", "fmt"), unlike most
+// module paths ("github.com/x/y"). A module may also have a dotless path
+// ("module svc"), so analysis combines this with the loader's module data
+// (LoadResult.Stdlib); use this alone only when that data is not available.
 func IsStandardLibrary(importPath string) bool {
 	first, _, _ := strings.Cut(importPath, "/")
 	return !strings.Contains(first, ".")
@@ -117,6 +119,15 @@ func IsMock(t types.Type) bool {
 		}
 	}
 	return false
+}
+
+// IsMockMethod reports whether sig belongs to a method on a generated mock
+// (see IsMock). Mocks in production packages satisfy interfaces, so the call
+// graph routes interface calls through them, but their bodies only record the
+// call for the test.
+func IsMockMethod(sig *types.Signature) bool {
+	recv := sig.Recv()
+	return recv != nil && IsMock(recv.Type())
 }
 
 // isMockLibraryType reports whether t is mock.Mock or gomock.Controller,

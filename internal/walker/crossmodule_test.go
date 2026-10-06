@@ -60,7 +60,7 @@ func walkCrossmodule(t *testing.T, entry string, algo analysis.Algo, indicators 
 	if algo == analysis.AlgoRTA {
 		graph = rta.Analyze([]*ssa.Function{fn}, true).CallGraph
 	}
-	w := walker.New(graph, detector.New(indicators), walker.Options{Module: r.Module, DependencyPkgs: r.DependencyPkgs, Fset: r.Prog.Fset})
+	w := walker.New(graph, detector.New(indicators), walker.Options{Module: r.Module, DependencyPkgs: r.DependencyPkgs, Stdlib: r.Stdlib, Fset: r.Prog.Fset})
 	calls, stats, err := w.Walk(fn)
 	if err != nil {
 		t.Fatalf("Walk(%q): %v", entry, err)

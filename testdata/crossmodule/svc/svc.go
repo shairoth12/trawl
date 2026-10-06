@@ -67,3 +67,21 @@ func (h *Handler) HandleFindTwice(ctx context.Context, q string) ([]string, erro
 	second, err := h.Store.Find(ctx, q+"!")
 	return append(first, second...), err
 }
+
+// MockedHandler has its Store set to a mock by non-test code, while the real
+// implementation arrives through dependency injection. VTA sees only the mock
+// value flow into MockedHandler.Store; the real one must come from CHA.
+type MockedHandler struct {
+	Store store.Store
+}
+
+// NewMockedHandler is a test helper in production code.
+func NewMockedHandler() *MockedHandler {
+	return &MockedHandler{Store: storemock.MockStore{}}
+}
+
+// HandleMockedGet reaches the SQL backend through a Store that VTA resolves
+// only to the mock.
+func (h *MockedHandler) HandleMockedGet(ctx context.Context, key string) (string, error) {
+	return h.Store.Get(ctx, key)
+}
