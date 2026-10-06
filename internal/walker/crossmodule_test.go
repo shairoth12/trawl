@@ -300,3 +300,23 @@ func TestWalk_CrossModule_UnresolvedSiteCountedOncePerWalk(t *testing.T) {
 		t.Errorf("UnresolvedInvokes = %d, want 1 (one dependency-side site)", stats.UnresolvedInvokes)
 	}
 }
+
+func TestWalk_DepsNone_BodylessSameModuleImplStaysUnresolved(t *testing.T) {
+	t.Parallel()
+	// With --deps none, dotless/impl (same module, not --pkg) has no bodies.
+	// The CHA fallback must not add an edge into that empty function: the call
+	// would then vanish instead of being counted as unresolved.
+	dir := filepath.Join(moduleRoot(t), "testdata", "dotless")
+	r, err := analysis.Load(t.Context(), analysis.Options{Dir: dir, Pattern: ".", Algo: analysis.AlgoVTA, DependencyPolicy: analysis.DependencyNone})
+	if err != nil {
+		t.Fatalf("analysis.Load(dotless): %v", err)
+	}
+	w := walker.New(r.Graph, detector.New(nil), walker.Options{Module: r.Module, Stdlib: r.Stdlib, Fset: r.Prog.Fset})
+	_, stats, err := w.Walk(resolve(t, r, "Handle"))
+	if err != nil {
+		t.Fatalf("Walk(Handle): %v", err)
+	}
+	if stats.UnresolvedInvokes != 1 {
+		t.Errorf("Walk(Handle) UnresolvedInvokes = %d, want 1", stats.UnresolvedInvokes)
+	}
+}

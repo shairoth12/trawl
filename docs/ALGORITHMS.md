@@ -60,7 +60,7 @@ vta.CallGraph(allFunctions, chaGraph)  ← refinement: prune by value flow
 fillEmptyInvokes(vtaGraph, chaGraph)   ← interface calls left with no callee get the CHA ones
 ```
 
-**CHA fallback**: VTA gives an interface call no callees (or only mock callees) when no real value visibly reaches it, which is what reflection-based DI (dig, fx) looks like. For those calls only, trawl copies the CHA callees into the VTA graph, so the walk still enters the implementation (and the dependency bodies built for it). Calls on interfaces declared in the standard library (and `error`) are not filled: CHA would match every implementation in the program. Calls where VTA found at least one callee are left as VTA found them.
+**CHA fallback**: VTA gives an interface call no callees (or only mock callees) when no real value visibly reaches it, which is what reflection-based DI (dig, fx) looks like. For those calls only, trawl copies the CHA callees into the VTA graph, so the walk still enters the implementation (and the dependency bodies built for it). Calls on interfaces declared in the standard library (and `error`) are not filled: CHA would match every implementation in the program. Only callees with a built body are copied (for a synthetic wrapper like `(*T).M`, the method it calls must have one): an edge into an empty function would end the walk there, so under `--deps none` a call whose implementation has no body stays unresolved and is reported or counted as such. Calls where VTA found at least one callee are left as VTA found them.
 
 **When to use**:
 - Default choice for most codebases

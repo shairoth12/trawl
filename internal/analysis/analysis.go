@@ -440,7 +440,9 @@ func buildGraph(ctx context.Context, result *LoadResult, algo Algo, pattern stri
 // the standard library, and error, are left alone: they match too many types
 // and no dependency bodies are built for them. A call whose only VTA callees
 // are mocks counts as empty too, the same rule the walker uses: a mock set in
-// non-test code hides the real, injected implementation.
+// non-test code hides the real, injected implementation. Only callees with a
+// built body are copied; an edge into an empty function would end the walk
+// there, while leaving the call empty lets the walker report it as unresolved.
 func fillEmptyInvokes(graph, initial *callgraph.Graph, stdlib map[string]bool) {
 	resolved := map[ssa.CallInstruction]bool{}
 	for _, n := range graph.Nodes {
@@ -453,12 +455,23 @@ func fillEmptyInvokes(graph, initial *callgraph.Graph, stdlib map[string]bool) {
 	}
 	for fn, n := range initial.Nodes {
 		for _, edge := range n.Out {
-			if fn == nil || edge.Site == nil || resolved[edge.Site] || !invokesNonStdlibInterface(edge.Site, stdlib) {
+			if fn == nil || edge.Site == nil || !hasBody(edge.Callee.Func) || resolved[edge.Site] || !invokesNonStdlibInterface(edge.Site, stdlib) {
 				continue
 			}
 			callgraph.AddEdge(graph.CreateNode(fn), edge.Site, graph.CreateNode(edge.Callee.Func))
 		}
 	}
+}
+
+// hasBody reports whether fn has a built body. A synthetic wrapper such as
+// (*T).M always has one, so for it the declared method it calls is checked.
+func hasBody(fn *ssa.Function) bool {
+	if obj, ok := fn.Object().(*types.Func); ok {
+		if decl := fn.Prog.FuncValue(obj); decl != nil {
+			fn = decl
+		}
+	}
+	return len(fn.Blocks) > 0
 }
 
 // invokesNonStdlibInterface reports whether site calls a method on a named

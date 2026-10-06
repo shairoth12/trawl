@@ -28,7 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - VTA: an interface call that VTA resolves to nothing, or only to mocks
   (typical for dig/fx injection), gets the CHA callees instead, so the walk enters the
   implementation and its dependency body; interfaces declared in the standard
-  library are not filled. Under VTA such calls move from `interface_dispatch`
+  library are not filled, and callees without a built body (e.g. same-module
+  packages under `--deps none`) are not copied, so the call stays unresolved
+  instead of vanishing. Under VTA such calls move from `interface_dispatch`
   to `cross_module_trace`, and `unresolved_invokes` drops
 - Several hits for the same line and service type are merged into one record;
   higher confidence wins, ties keep the interface name
