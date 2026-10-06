@@ -128,7 +128,7 @@ trawl --pkg ./cmd/worker --entry ProcessJob --config trawl.yaml
 # RTA (faster, less precise for interfaces)
 trawl --pkg ./cmd/server --entry HandleRequest --algo rta
 
-# CHA for reflection-based DI (dig, fx, wire)
+# CHA for broadest coverage (over-approximates)
 trawl --pkg ./internal/handler --entry Handle --scope ./... --algo cha
 
 # VTA with scope for manual constructor DI
@@ -209,8 +209,8 @@ Stage 7: JSON → stdout
 | **RTA** | Medium | Faster | By instantiated types | No |
 | **CHA** | Low (with filters) | Fastest | By structural type match | Yes |
 
-**Use VTA** when concrete types are wired through visible constructors.
-**Use CHA** when using reflection-based DI (dig, fx, wire). Add `--scope` only for wiring packages the target does not import.
+**Use VTA** in most cases, also with reflection-based DI (dig, fx): interface calls with no value flow fall back to CHA callees.
+**Use CHA** when VTA still reports `interface_dispatch` records, or for the broadest coverage. Add `--scope` only for wiring packages the target does not import.
 
 See [docs/ALGORITHMS.md](docs/ALGORITHMS.md) for the full decision guide.
 
@@ -322,8 +322,8 @@ compiles `(*sqlStore).Get`, follows it into `database/sql`, and reports:
 # Manual DI (constructor injection) — VTA traces value flow
 trawl --pkg ./internal/handler --entry Handle --scope ./cmd/server --algo vta
 
-# Reflection-based DI (dig, fx) — CHA resolves by type structure
-trawl --pkg ./internal/handler --entry Handle --algo cha
+# Reflection-based DI (dig, fx) — VTA falls back to CHA callees for such calls
+trawl --pkg ./internal/handler --entry Handle
 ```
 
 When no implementor is visible at all (the concrete type is bound only by

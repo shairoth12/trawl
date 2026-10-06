@@ -10,13 +10,14 @@ What kind of DI does your codebase use?
 ├─ No DI / all concrete types visible in analyzed package
 │   └─ use: --algo vta (default)
 │
-├─ Manual constructor injection (NewServer(NewStore()))
+├─ Constructor injection (NewServer(NewStore()), or wire's generated code)
 │   └─ use: --algo vta --scope ./cmd/server
 │      (scope loads the wiring package so VTA can trace value flow)
 │
-├─ Reflection-based DI (dig, fx, wire)
-│   └─ use: --algo cha --scope ./...
-│      (CHA resolves by structural type matching, no value flow needed)
+├─ Reflection-based DI (dig, fx)
+│   └─ use: --algo vta (default)
+│      (calls with no value flow fall back to CHA callees)
+│      if interface_dispatch records remain: --algo cha
 │
 └─ Unsure / want broadest coverage
     └─ use: --algo cha --scope ./...
@@ -98,9 +99,8 @@ cha.CallGraph(prog) → graph  (used directly, no VTA refinement)
 ```
 
 **When to use**:
-- Reflection-based DI frameworks (dig, fx, wire)
 - When you want the broadest possible coverage
-- When `--algo vta` misses calls because concrete types aren't visibly wired
+- When `--algo vta` still reports `interface_dispatch` records: VTA keeps its own callees for a call where some value does flow, so an implementation bound only by reflection at that call is missed
 
 **Precondition**: CHA only considers concrete types that are *runtime types* of the program — some **built** function body must convert the type to an interface (`MakeInterface`): a constructor returning the interface, or `var _ I = (*T)(nil)`. A dependency whose constructor returns the concrete type and is bound to the interface only through reflection degrades to an `interface_dispatch` record.
 
@@ -197,7 +197,7 @@ Scenario                                    │ Recommended flags
 ────────────────────────────────────────────┼──────────────────────────────────────────
 Simple handler, no DI                       │ --algo vta
 Handler with constructor DI (visible wiring)│ --algo vta --scope ./cmd/server
-Handler with dig/fx/wire DI                 │ --algo cha --scope ./...
+Handler with dig/fx DI                      │ --algo vta (--algo cha if interface_dispatch remains)
 Maximum coverage, accept false positives    │ --algo cha --scope ./...
 Fast analysis, good-enough precision        │ --algo rta
 Analyzing a leaf package in isolation       │ --algo vta (no external calls expected)

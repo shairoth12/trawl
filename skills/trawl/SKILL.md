@@ -13,12 +13,13 @@ description: >
 compatibility: Requires trawl CLI (go install github.com/shairoth12/trawl/cmd/trawl@latest) and Go 1.26+ (Go 1.21+ downloads it automatically during install). Target package must compile and have dependencies available.
 metadata:
   author: shairoth12
-  version: 1.1.0
+  version: 1.2.0
 ---
 
 > Note: trawl reads source code — it does NOT instrument at runtime. It cannot detect
-> calls hidden behind `os.Exec` or string-based dynamic dispatch. Use `--algo cha` for
-> reflection-based DI frameworks (dig, fx, wire).
+> calls hidden behind `os.Exec` or string-based dynamic dispatch. The default VTA handles
+> reflection-based DI (dig, fx) by falling back to CHA; use `--algo cha` only when
+> `interface_dispatch` records remain.
 
 ---
 
@@ -40,11 +41,12 @@ occurrence listed separately so each can be individually mocked.
 User says: *"What needs to be mocked to test ProcessPayment? The payment service uses dig for DI."*
 
 ```bash
-trawl --pkg ./internal/payment --entry ProcessPayment --algo cha --scope ./...
+trawl --pkg ./internal/payment --entry ProcessPayment
 ```
 
 Result: Full list of external calls including those resolved through reflect-based DI
-wiring — every call site a test would need to stub.
+wiring — every call site a test would need to stub. If the output still has
+`interface_dispatch` records, rerun with `--algo cha`.
 
 ### Example 3: Audit with internal wrappers
 
@@ -129,21 +131,23 @@ Does the package under --pkg directly instantiate its own concrete types?
 │         VTA traces value flow through constructors and assignments.
 │         Works when the wiring code is visible in the loaded packages.
 │
-├─ MAYBE, types are in a different package (constructor DI) → --algo vta --scope ./cmd/server
+├─ MAYBE, types are in a different package (constructor DI, wire) → --algo vta --scope ./cmd/server
 │         Load the wiring package too, so VTA can see value flow.
 │         Example: handler uses Store interface, NewServer(NewStore()) is in cmd/server.
+│         wire generates plain constructor code (wire_gen.go), so it is the same case.
 │
-├─ Uses reflection-based DI (dig, fx, wire) → --algo cha --scope ./...
-│         CHA resolves dispatch purely by structural type matching.
-│         It doesn't need to trace value flow, so it works through reflect.Call.
-│         Trade-off: over-approximates (may include types never wired at runtime).
+├─ Uses reflection-based DI (dig, fx) → --algo vta (default)
+│         An interface call with no value flow gets the CHA callees instead.
+│         If interface_dispatch records remain → --algo cha
+│         (VTA keeps its own callees where some value does flow).
+│         CHA trade-off: over-approximates (may include types never wired at runtime).
 │
 └─ Unsure, want broadest coverage → --algo cha --scope ./...
 ```
 
 Quick signals in the codebase that indicate DI framework use:
-- `dig.Provide`, `dig.Invoke`, `fx.Provide`, `fx.Options` → use CHA
-- `wire.Build`, `wire.NewSet` → use CHA
+- `dig.Provide`, `dig.Invoke`, `fx.Provide`, `fx.Options` → VTA; CHA if `interface_dispatch` remains
+- `wire.Build`, `wire.NewSet` → VTA + scope of the package with `wire_gen.go`
 - Constructor functions like `NewServer(deps ...)` passing interfaces → VTA + scope
 
 ---
