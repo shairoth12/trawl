@@ -245,3 +245,23 @@ func TestLoad(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_VTA_StdlibInvokesStayEmpty(t *testing.T) {
+	// Not parallel: analysis.Load shells out to the go toolchain.
+	// No value reaches w (http.ResponseWriter) or resp.Body (io.ReadCloser)
+	// under VTA. CHA would match every implementation in the program, so the
+	// empty-invoke fill must skip interfaces declared in the standard library.
+	r, err := analysis.Load(t.Context(), analysis.Options{Dir: moduleRoot(t), Pattern: "./testdata/chain", Algo: analysis.AlgoVTA})
+	if err != nil {
+		t.Fatalf("analysis.Load(chain): %v", err)
+	}
+	fn := r.SSAPkg.Func("HandleChain")
+	if fn == nil {
+		t.Fatal("HandleChain not found in chain fixture")
+	}
+	for _, e := range r.Graph.Nodes[fn].Out {
+		if e.Site != nil && e.Site.Common().IsInvoke() {
+			t.Errorf("HandleChain has edge %s → %s on a stdlib interface call, want none", e.Site, e.Callee.Func)
+		}
+	}
+}

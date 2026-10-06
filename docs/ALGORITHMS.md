@@ -38,8 +38,8 @@ Graph built when  │ During Load()        │ After Resolve()      │ During L
 Requires entry    │ NO (whole-program)   │ YES (entry roots)    │ NO (whole-program)
 Interface resolve │ By observed value    │ By instantiated      │ By any structural
                   │ flow assignments     │ concrete types       │ implementor
-Reflection DI     │ CANNOT trace         │ CANNOT trace         │ RESOLVES (by type
-                  │ reflect.Call         │ reflect.Call         │ structure)
+Reflection DI     │ CHA fallback for     │ CANNOT trace         │ RESOLVES (by type
+                  │ calls with no flow   │ reflect.Call         │ structure)
 False positive    │ LOW                  │ LOW                  │ HIGHER (mitigated
 risk              │                      │                      │ by filters)
 ```
@@ -54,14 +54,19 @@ cha.CallGraph(prog)                    ← seed: all structural matches
     │
     ▼
 vta.CallGraph(allFunctions, chaGraph)  ← refinement: prune by value flow
+    │
+    ▼
+fillEmptyInvokes(vtaGraph, chaGraph)   ← interface calls left with no callee get the CHA ones
 ```
+
+**CHA fallback**: VTA gives an interface call no callees when no value visibly reaches it, which is what reflection-based DI (dig, fx) looks like. For those calls only, trawl copies the CHA callees into the VTA graph, so the walk still enters the implementation (and the dependency bodies built for it). Calls on interfaces declared in the standard library (and `error`) are not filled: CHA would match every implementation in the program. Calls where VTA found at least one callee are left as VTA found them.
 
 **When to use**:
 - Default choice for most codebases
 - When concrete types are wired via constructors in visible code
 - When precision matters more than coverage
 
-**Limitation**: Cannot trace through `reflect.Call`, `interface{}`/`any` type assertions at runtime, or DI containers that use reflection.
+**Limitation**: Cannot trace through `reflect.Call` or `interface{}`/`any` type assertions at runtime. Interfaces filled by a DI container get the CHA fallback above, with CHA's precision and its precondition (the concrete type must be converted to an interface somewhere in built code).
 
 **With `--scope`**: Loading extra packages gives VTA more value-flow edges to observe. Requires explicit value flow in the loaded code (e.g., a `Wire()` function that calls `HandleLeaf(ctx, &SQLStore{})`).
 
@@ -138,7 +143,7 @@ The walker recurses into those bodies and reports what it finds at the module-si
 
 If `(*sqlStore).Get` itself called a second interface (say `search.Searcher`) implemented in `lib/search`, round 2 would build `lib/search` the same way. That is what the rounds are for.
 
-Interface calls that still have no concrete callee are reported as `interface_dispatch` records (high confidence when the interface is declared in an indicator package, low when inferred from that package's imports) and counted in `stats.unresolved_invokes`. VTA and RTA still cannot resolve reflection-based DI, but they now yield these hints instead of silence.
+Interface calls that still have no concrete callee are reported as `interface_dispatch` records (high confidence when the interface is declared in an indicator package, low when inferred from that package's imports) and counted in `stats.unresolved_invokes`. RTA still cannot resolve reflection-based DI, but it now yields these hints instead of silence; VTA falls back to CHA for such calls (see [VTA](#vta-variable-type-analysis--default)).
 
 **Tuning the selection limits**: 3 rounds and the 200-package cap are heuristics, not measured optima (see [ADR 0009](adr/0009-selective-dependency-bodies.md)). To check them against a real target, run with `--stats` twice — once as-is and once with `--deps none` — and compare `dependency_packages`, `packages_analyzed` and `load_duration_ms`. A `dependency_bodies_truncated` warning in the logs means the cap was hit; a large `unresolved_invokes` with a small `dependency_packages` means the rounds ran out before the chain resolved.
 

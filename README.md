@@ -205,7 +205,7 @@ Stage 7: JSON → stdout
 
 | Algorithm | Precision | Speed | Interface Resolution | Handles Reflection DI |
 |-----------|-----------|-------|---------------------|-----------------------|
-| **VTA** (default) | High | Slower | By observed value flow | No |
+| **VTA** (default) | High | Slower | By observed value flow | Partly (CHA fallback for interface calls with no value flow) |
 | **RTA** | Medium | Faster | By instantiated types | No |
 | **CHA** | Low (with filters) | Fastest | By structural type match | Yes |
 

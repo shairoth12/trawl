@@ -26,6 +26,8 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
+
+	"github.com/shairoth12/trawl"
 )
 
 // LoadResult holds the outcome of a successful package load and SSA build.
@@ -390,9 +392,48 @@ func buildGraph(ctx context.Context, result *LoadResult, algo Algo, pattern stri
 	if graph == nil {
 		return nil, fmt.Errorf("vta.CallGraph returned nil for pattern %q", pattern)
 	}
+	fillEmptyInvokes(graph, initial)
 	result.Graph = graph
 
 	return result, nil
+}
+
+// fillEmptyInvokes gives each interface call that VTA resolved to nothing the
+// callees CHA found for it. VTA only follows values through code, so an
+// interface filled by reflection-based DI (dig, fx) has no callees; CHA
+// matches by type and finds the implementations, including the ones in
+// dependency packages whose bodies were built for this. Interfaces declared in
+// the standard library, and error, are left alone: they match too many types
+// and no dependency bodies are built for them.
+func fillEmptyInvokes(graph, initial *callgraph.Graph) {
+	resolved := map[ssa.CallInstruction]bool{}
+	for _, n := range graph.Nodes {
+		for _, edge := range n.Out {
+			resolved[edge.Site] = true
+		}
+	}
+	for fn, n := range initial.Nodes {
+		for _, edge := range n.Out {
+			if fn == nil || edge.Site == nil || resolved[edge.Site] || !invokesNonStdlibInterface(edge.Site) {
+				continue
+			}
+			callgraph.AddEdge(graph.CreateNode(fn), edge.Site, graph.CreateNode(edge.Callee.Func))
+		}
+	}
+}
+
+// invokesNonStdlibInterface reports whether site calls a method on a named
+// interface declared outside the standard library.
+func invokesNonStdlibInterface(site ssa.CallInstruction) bool {
+	cc := site.Common()
+	if !cc.IsInvoke() {
+		return false
+	}
+	named, ok := types.Unalias(cc.Value.Type()).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return false
+	}
+	return !trawl.IsStandardLibrary(named.Obj().Pkg().Path())
 }
 
 // resolveSSAPkg selects the SSA package to use as the analysis entry point.

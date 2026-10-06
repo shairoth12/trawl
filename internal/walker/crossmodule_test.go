@@ -130,22 +130,23 @@ func TestWalk_GenericCallIntoIndicatorIsDirect(t *testing.T) {
 	t.Errorf("Walk(HandleGeneric) with util as indicator: no UTIL direct/high record; got %+v", calls)
 }
 
-func TestWalk_CrossModule_VTA_UnresolvedInvokeIsAbstract(t *testing.T) {
+func TestWalk_CrossModule_VTA_InjectedInterfaceIsTraced(t *testing.T) {
 	// Not parallel: analysis.Load shells out to the go toolchain.
-	// No value flow reaches Handler.Store under VTA, so the invoke has no callee.
+	// No value flow reaches Handler.Store under VTA (reflection-style DI), so
+	// the invoke gets its CHA callees and the walk enters the dependency body.
 	calls, stats := walkCrossmodule(t, "HandleGet", analysis.AlgoVTA, nil, analysis.DependencyAuto, 0)
-	if stats.UnresolvedInvokes != 1 {
-		t.Errorf("UnresolvedInvokes = %d, want 1", stats.UnresolvedInvokes)
+	if stats.UnresolvedInvokes != 0 {
+		t.Errorf("UnresolvedInvokes = %d, want 0", stats.UnresolvedInvokes)
 	}
 	if len(calls) != 1 {
-		t.Fatalf("calls = %d, want exactly 1 abstract record; got %+v", len(calls), calls)
+		t.Fatalf("calls = %d, want exactly 1 traced record; got %+v", len(calls), calls)
 	}
 	got := calls[0]
-	if got.ResolvedVia != trawl.ResolvedViaInterfaceDispatch || got.Confidence != trawl.ConfidenceLow {
-		t.Errorf("resolved_via/confidence = %s/%s, want interface_dispatch/low", got.ResolvedVia, got.Confidence)
+	if got.ResolvedVia != trawl.ResolvedViaCrossModuleTrace || got.ServiceType != trawl.ServiceTypePostgres || got.Confidence != trawl.ConfidenceHigh {
+		t.Errorf("resolved_via/service/confidence = %s/%s/%s, want cross_module_trace/POSTGRES/high", got.ResolvedVia, got.ServiceType, got.Confidence)
 	}
-	if got.Function != "example.com/lib/store.Store.Get" || got.ImportPath != "example.com/lib/store" {
-		t.Errorf("function/import = %q/%q, want interface label and its package", got.Function, got.ImportPath)
+	if got.Function != "(*example.com/lib/store.sqlStore).Get" || got.ImportPath != "example.com/lib/store" {
+		t.Errorf("function/import = %q/%q, want boundary callee and its package", got.Function, got.ImportPath)
 	}
 	if !strings.HasSuffix(got.File, filepath.Join("svc", "svc.go")) || got.Line == 0 {
 		t.Errorf("file/line = %q:%d, want the call site in svc.go", got.File, got.Line)
