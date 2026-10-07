@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `trawl --version` printed `dev` for binaries installed with
+  `go install github.com/shairoth12/trawl/cmd/trawl@vX.Y.Z`. It now prints the
+  module version.
+
 ## [0.3.0] - 2026-10-07
 
 ### Added
