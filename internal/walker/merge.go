@@ -38,7 +38,7 @@ func mergeByPosition(hits []hit) []trawl.ExternalCall {
 	return out
 }
 
-func confidenceRank(confidence string) int {
+func confidenceRank(confidence trawl.Confidence) int {
 	switch confidence {
 	case trawl.ConfidenceHigh:
 		return 3

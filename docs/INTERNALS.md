@@ -283,7 +283,7 @@ Hits with `token.NoPos` are never merged.
 
 CHA resolves these to every implementor in the program, producing noise.
 
-**`isMockMethod(fn)`**: Returns true if fn's receiver is a mock according to `trawl.IsMock`: a struct with a field of type `mock.Mock` (testify, mockery) or `*gomock.Controller` (mockgen). It checks package and type names, not the type's own name, so a real `MockingbirdClient` is walked and a hand-written mock without such a field is walked too. Mocks satisfy interfaces, so the call graph sends interface calls through them, but their bodies only record the call for the test.
+**`isMockMethod(fn)`**: Returns true if fn's receiver is a mock according to `detector.IsMock`: a struct with a field of type `mock.Mock` (testify, mockery) or `*gomock.Controller` (mockgen). It checks package and type names, not the type's own name, so a real `MockingbirdClient` is walked and a hand-written mock without such a field is walked too. Mocks satisfy interfaces, so the call graph sends interface calls through them, but their bodies only record the call for the test.
 
 **`interfaceMethodLabel(cc)`**: Returns `"InterfaceType.MethodName"` from an invoke call site. Used instead of concrete mock type names in output.
 
@@ -314,10 +314,16 @@ Removed in favour of the above: `isMockReceiver`, `receiverPkgPath`, `inferFromI
 
 ## Package `trawl` (root)
 
-**Files**: `trawl.go`, `config.go`
-**Purpose**: Type definitions and configuration loading.
+**Files**: `trawl.go`
+**Purpose**: Types only: the JSON output schema and the YAML config schema. No functions; see [ADR 0013](adr/0013-root-package-is-schema-only.md).
 
-### `ShortenName(s string) string`
+---
+
+## Name shortening and config loading
+
+### `shortenName(s string) string` (internal/walker)
+
+Called once per record at the end of `Walk` to fill `short_function` and `short_call_chain`.
 
 ```
 Input: "(*github.com/foo/bar.Client).Do"
@@ -340,14 +346,14 @@ Step 5: Return prefix + everything after the dot
 Output: "(*Client).Do"
 ```
 
-### `LoadConfig(ctx, path) (Config, error)`
+### `loadConfig(path) (trawl.Config, error)` (cmd/trawl)
 
 ```
 path == ""?  → return zero Config (no error)
-os.ReadFile → yaml.Unmarshal → Config.Validate()
+os.ReadFile → yaml.Unmarshal → validateConfig()
 ```
 
-### `Config.Validate() error`
+### `validateConfig(cfg) error` (cmd/trawl)
 
 Checks every Indicator:
 - `Package` must not be empty

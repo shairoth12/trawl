@@ -83,17 +83,11 @@ func pipelineOpts(t *testing.T, opts analysis.Options, entryName string, indicat
 		t.Fatalf("Walk(%q): %v", entryName, err)
 	}
 
-	for i := range calls {
-		calls[i].ShortFunction = trawl.ShortenName(calls[i].Function)
-		calls[i].ShortCallChain = make([]string, len(calls[i].CallChain))
-		for j, name := range calls[i].CallChain {
-			calls[i].ShortCallChain[j] = trawl.ShortenName(name)
-		}
+	return trawl.Result{
+		EntryPoint:    fn.String(),
+		Package:       loadResult.SSAPkg.Pkg.Path(),
+		ExternalCalls: calls,
 	}
-
-	out := trawl.NewResult(fn.String(), loadResult.SSAPkg.Pkg.Path())
-	out.ExternalCalls = calls
-	return out
 }
 
 func TestIntegration_Basic(t *testing.T) {

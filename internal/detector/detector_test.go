@@ -196,3 +196,22 @@ func TestDetect_SkipInternal(t *testing.T) {
 		})
 	}
 }
+
+func TestIsStandardLibrary(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"net/http", true}, {"fmt", true}, {"database/sql", true}, {"unsafe", true},
+		{"github.com/foo/bar", false}, {"example.com/lib/store", false}, {"golang.org/x/tools/go/ssa", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+			if got := IsStandardLibrary(tt.path); got != tt.want {
+				t.Errorf("IsStandardLibrary(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}

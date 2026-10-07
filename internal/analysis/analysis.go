@@ -27,7 +27,7 @@ import (
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 
-	"github.com/shairoth12/trawl"
+	"github.com/shairoth12/trawl/internal/detector"
 )
 
 // LoadResult holds the outcome of a successful package load and SSA build.
@@ -236,7 +236,7 @@ func Load(ctx context.Context, opts Options) (*LoadResult, error) {
 func stdlibPkgs(pkgs []*packages.Package) map[string]bool {
 	out := map[string]bool{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		if p.Module == nil && trawl.IsStandardLibrary(p.PkgPath) {
+		if p.Module == nil && detector.IsStandardLibrary(p.PkgPath) {
 			out[p.PkgPath] = true
 		}
 	})
@@ -447,7 +447,7 @@ func fillEmptyInvokes(graph, initial *callgraph.Graph, stdlib map[string]bool) {
 	resolved := map[ssa.CallInstruction]bool{}
 	for _, n := range graph.Nodes {
 		for _, edge := range n.Out {
-			if edge.Callee == nil || edge.Callee.Func == nil || trawl.IsMockMethod(edge.Callee.Func.Signature) {
+			if edge.Callee == nil || edge.Callee.Func == nil || detector.IsMockMethod(edge.Callee.Func.Signature) {
 				continue
 			}
 			resolved[edge.Site] = true

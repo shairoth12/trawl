@@ -121,7 +121,7 @@ with  - package: "github.com/org/store"  service_type: "POSTGRES":
 
 ## Validation
 
-`Config.Validate()` runs automatically during `LoadConfig()`. It rejects:
+trawl validates the config when it loads it. It rejects:
 
 ```
 Error condition                           │ Message format

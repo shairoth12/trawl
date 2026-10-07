@@ -159,7 +159,7 @@ func run(args []string, stdout io.Writer) error {
 		}
 	}
 
-	cfg, err := trawl.LoadConfig(ctx, *configPath)
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -242,16 +242,11 @@ func run(args []string, stdout io.Writer) error {
 		calls = deduplicateCalls(calls)
 	}
 
-	for i := range calls {
-		calls[i].ShortFunction = trawl.ShortenName(calls[i].Function)
-		calls[i].ShortCallChain = make([]string, len(calls[i].CallChain))
-		for j, name := range calls[i].CallChain {
-			calls[i].ShortCallChain[j] = trawl.ShortenName(name)
-		}
+	out := trawl.Result{
+		EntryPoint:    fn.String(),
+		Package:       loadResult.SSAPkg.Pkg.Path(),
+		ExternalCalls: calls,
 	}
-
-	out := trawl.NewResult(fn.String(), loadResult.SSAPkg.Pkg.Path())
-	out.ExternalCalls = calls
 	if *dedupFlag {
 		out.Deduplicated = true
 	}
@@ -356,7 +351,7 @@ func deduplicateCalls(calls []trawl.ExternalCall) []trawl.ExternalCall {
 		return nil
 	}
 	seen := make(map[dedupKey]int, len(calls))
-	var result []trawl.ExternalCall
+	result := make([]trawl.ExternalCall, 0, len(calls)) // non-nil: external_calls is never null
 	for _, ec := range calls {
 		key := dedupKey{
 			serviceType: ec.ServiceType,

@@ -1,14 +1,14 @@
-// Package trawl provides static analysis for detecting external service calls
-// reachable from a given entry point function.
+// Package trawl defines the types of trawl's JSON output and YAML config.
+//
+// Use it to decode the output of the trawl command or to build a config
+// file. The analysis itself is run by the trawl command; this package has
+// no analysis API. docs/OUTPUT-FORMAT.md describes which output changes
+// a minor release may make.
 package trawl
-
-import (
-	"go/types"
-	"strings"
-)
 
 // ServiceType identifies the category of an external service matched by an indicator.
 // User-defined service types can be expressed as ServiceType("CUSTOM").
+// The set is open: consumers must accept values not listed here.
 type ServiceType string
 
 // Built-in service type constants.
@@ -50,15 +50,6 @@ type Result struct {
 	Stats         *AnalysisStats `json:"stats,omitempty"`
 }
 
-// NewResult returns a Result with ExternalCalls initialized to a non-nil empty slice.
-func NewResult(entryPoint, pkg string) Result {
-	return Result{
-		EntryPoint:    entryPoint,
-		Package:       pkg,
-		ExternalCalls: []ExternalCall{},
-	}
-}
-
 // ExternalCall describes a single detected call to an external service reachable from the entry point.
 type ExternalCall struct {
 	ServiceType    ServiceType `json:"service_type"`     // matched service label, e.g. ServiceTypeRedis
@@ -67,142 +58,37 @@ type ExternalCall struct {
 	File           string      `json:"file"`             // source file containing the call site
 	Line           int         `json:"line"`             // line number of the call site
 	CallChain      []string    `json:"call_chain"`       // ordered function names from entry point to call site; never nil in valid results
-	ResolvedVia    string      `json:"resolved_via"`     // how the call was discovered: direct, mock_inference, cross_module_inference, cross_module_trace, interface_dispatch
-	Confidence     string      `json:"confidence"`       // reliability of the detection: high, medium, low
+	ResolvedVia    ResolvedVia `json:"resolved_via"`     // how the call was discovered
+	Confidence     Confidence  `json:"confidence"`       // reliability of the detection
 	ShortFunction  string      `json:"short_function"`   // Function with module paths and generic type params stripped
 	ShortCallChain []string    `json:"short_call_chain"` // CallChain with module paths and generic type params stripped
 }
 
-// ResolvedVia values describe how an external call was discovered.
+// ResolvedVia describes how an external call was discovered.
+// The set is open: a minor release may add values, so consumers must accept
+// unknown ones (Confidence tells how far to trust such a record).
+type ResolvedVia string
+
+// ResolvedVia values.
 const (
-	ResolvedViaDirect               = "direct"
-	ResolvedViaMockInference        = "mock_inference"
-	ResolvedViaCrossModuleInference = "cross_module_inference"
-	ResolvedViaCrossModuleTrace     = "cross_module_trace" // dependency body walked to a backend; attributed to the module-side call
-	ResolvedViaInterfaceDispatch    = "interface_dispatch" // interface call with no concrete callee, classified by the interface's package
+	ResolvedViaDirect               ResolvedVia = "direct"
+	ResolvedViaMockInference        ResolvedVia = "mock_inference"
+	ResolvedViaCrossModuleInference ResolvedVia = "cross_module_inference"
+	ResolvedViaCrossModuleTrace     ResolvedVia = "cross_module_trace" // dependency body walked to a backend; attributed to the module-side call
+	ResolvedViaInterfaceDispatch    ResolvedVia = "interface_dispatch" // interface call with no concrete callee, classified by the interface's package
 )
 
-// Confidence values indicate the reliability of a detection.
+// Confidence indicates the reliability of a detection.
+// The set is closed: it is always one of the constants below, and adding a
+// level would be a major version change.
+type Confidence string
+
+// Confidence values, from most to least reliable.
 const (
-	ConfidenceHigh   = "high"
-	ConfidenceMedium = "medium"
-	ConfidenceLow    = "low"
+	ConfidenceHigh   Confidence = "high"
+	ConfidenceMedium Confidence = "medium"
+	ConfidenceLow    Confidence = "low"
 )
-
-// IsStandardLibrary reports whether importPath looks like a Go standard
-// library path: no dot in its first element ("net/http", "fmt"), unlike most
-// module paths ("github.com/x/y"). A module may also have a dotless path
-// ("module svc"), so analysis combines this with the loader's module data
-// (LoadResult.Stdlib); use this alone only when that data is not available.
-func IsStandardLibrary(importPath string) bool {
-	first, _, _ := strings.Cut(importPath, "/")
-	return !strings.Contains(first, ".")
-}
-
-// IsMock reports whether t (or the type t points to) is a generated mock: a
-// struct with a field of type mock.Mock (testify, mockery) or
-// *gomock.Controller (mockgen). The check uses package names, not import
-// paths, so forks of those libraries count too. The type's name is not
-// checked, so a real type named MockingbirdClient is not a mock, and a
-// hand-written mock without such a field is not a mock either.
-func IsMock(t types.Type) bool {
-	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
-		t = ptr.Elem()
-	}
-	st, ok := t.Underlying().(*types.Struct)
-	if !ok {
-		return false
-	}
-	for field := range st.Fields() {
-		if isMockLibraryType(field.Type()) {
-			return true
-		}
-	}
-	return false
-}
-
-// IsMockMethod reports whether sig belongs to a method on a generated mock
-// (see IsMock). Mocks in production packages satisfy interfaces, so the call
-// graph routes interface calls through them, but their bodies only record the
-// call for the test.
-func IsMockMethod(sig *types.Signature) bool {
-	recv := sig.Recv()
-	return recv != nil && IsMock(recv.Type())
-}
-
-// isMockLibraryType reports whether t is mock.Mock or gomock.Controller,
-// directly or through a pointer.
-func isMockLibraryType(t types.Type) bool {
-	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
-		t = ptr.Elem()
-	}
-	named, ok := types.Unalias(t).(*types.Named)
-	if !ok || named.Obj().Pkg() == nil {
-		return false
-	}
-	pkg, name := named.Obj().Pkg().Name(), named.Obj().Name()
-	return pkg == "mock" && name == "Mock" || pkg == "gomock" && name == "Controller"
-}
-
-// ShortenName strips module path prefixes and generic type parameters from
-// a fully-qualified Go SSA function name, producing a concise form suitable
-// for LLM consumption.
-//
-// Examples:
-//
-//	"github.com/foo/bar.Get"                          → "Get"
-//	"(*github.com/foo/bar.Client).Do"                 → "(*Client).Do"
-//	"github.com/foo/bar.Cache[github.com/a/b.T].Set"  → "Cache.Set"
-func ShortenName(s string) string {
-	s = stripGenericParams(s)
-
-	lastSlash := strings.LastIndex(s, "/")
-	if lastSlash == -1 {
-		return s
-	}
-
-	dotAfterSlash := strings.IndexByte(s[lastSlash:], '.')
-	if dotAfterSlash == -1 {
-		return s
-	}
-
-	// Preserve prefix characters before the package path, e.g. "(*".
-	pathStart := 0
-	for pathStart < lastSlash && (s[pathStart] == '(' || s[pathStart] == '*') {
-		pathStart++
-	}
-
-	prefix := s[:pathStart]
-	suffix := s[lastSlash+dotAfterSlash+1:]
-	return prefix + suffix
-}
-
-// stripGenericParams removes Go generic type parameter blocks ([...]) from s,
-// handling nested brackets. Iterative to handle strings with multiple
-// top-level bracket pairs without additional stack frames.
-func stripGenericParams(s string) string {
-	for {
-		start := strings.IndexByte(s, '[')
-		if start == -1 {
-			return s
-		}
-		depth := 0
-		for i := start; i < len(s); i++ {
-			switch s[i] {
-			case '[':
-				depth++
-			case ']':
-				depth--
-				if depth == 0 {
-					s = s[:start] + s[i+1:]
-					goto next
-				}
-			}
-		}
-		return s // unmatched '[', bail
-	next:
-	}
-}
 
 // Indicator maps an import path prefix to a named service type for detection purposes.
 // When SkipInternal is true, subpackages under /internal/ within the indicator prefix
