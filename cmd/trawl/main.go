@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -45,9 +46,16 @@ var (
 
 // versionInfo returns the human-readable version string, including the Go
 // version the binary was compiled with, the git commit, and the build date.
+// Builds without ldflags, such as "go install module@version", report the
+// module version that the go command records in the binary.
 func versionInfo() string {
+	v := version
+	info, ok := debug.ReadBuildInfo()
+	if v == "dev" && ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		v = info.Main.Version
+	}
 	return fmt.Sprintf("trawl %s (commit %s, built %s with %s)",
-		version, commit, date, runtime.Version())
+		v, commit, date, runtime.Version())
 }
 
 // toolchainWarning returns a non-empty warning string when the host toolchain
