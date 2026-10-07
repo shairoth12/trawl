@@ -211,8 +211,12 @@ github.com/shairoth12/trawl/
 
 ## Key Data Types
 
+Which enum values may be added in a minor release: see [OUTPUT-FORMAT.md, Compatibility](OUTPUT-FORMAT.md#compatibility).
+
 ```
 ServiceType  string                    // "HTTP", "REDIS", "GRPC", …
+ResolvedVia  string                    // how a call was found: "direct", "cross_module_trace", …
+Confidence   string                    // "high" | "medium" | "low"
 
 Result {
     EntryPoint    string               // SSA-qualified: "pkg.FuncName"
@@ -228,8 +232,8 @@ ExternalCall {
     File           string              // relative source path
     Line           int                 // 0 for synthetic edges
     CallChain      []string            // entry → … → call site
-    ResolvedVia    string              // "direct" | "mock_inference" | "cross_module_inference" | "cross_module_trace" | "interface_dispatch"
-    Confidence     string              // "high" | "medium" | "low"
+    ResolvedVia    ResolvedVia         // open enum: "direct" | "mock_inference" | "cross_module_inference" | "cross_module_trace" | "interface_dispatch" | future values
+    Confidence     Confidence          // closed enum: "high" | "medium" | "low"
     ShortFunction  string              // Function with paths/generics stripped
     ShortCallChain []string            // CallChain with same stripping
 }
