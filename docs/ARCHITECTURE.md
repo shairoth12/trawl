@@ -221,7 +221,7 @@ Confidence   string                    // "high" | "medium" | "low"
 Result {
     EntryPoint    string               // SSA-qualified: "pkg.FuncName"
     Package       string               // import path of analyzed package
-    ExternalCalls []ExternalCall        // never nil
+    ExternalCalls []ExternalCall        // never nil in trawl's output
     Deduplicated  bool                 // true iff --dedup used
 }
 
