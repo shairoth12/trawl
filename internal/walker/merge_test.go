@@ -10,7 +10,7 @@ import (
 	"github.com/shairoth12/trawl/internal/walker"
 )
 
-func call(svc trawl.ServiceType, fn, via, conf string) trawl.ExternalCall {
+func call(svc trawl.ServiceType, fn string, via trawl.ResolvedVia, conf trawl.Confidence) trawl.ExternalCall {
 	return trawl.ExternalCall{ServiceType: svc, Function: fn, ResolvedVia: via, Confidence: conf, CallChain: []string{"entry", fn}}
 }
 

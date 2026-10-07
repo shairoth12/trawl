@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
-	"github.com/shairoth12/trawl"
+	"github.com/shairoth12/trawl/internal/detector"
 )
 
 // Resolve returns the *ssa.Function for the named entry point within result.
@@ -72,7 +72,7 @@ func resolveMethod(ssaPkg *ssa.Package, entry string) (*ssa.Function, error) {
 }
 
 // resolveBareMethod scans all named types in the package for a method named
-// name. Generated mocks (see trawl.IsMock) are skipped; the user can still
+// name. Generated mocks (see detector.IsMock) are skipped; the user can still
 // target them explicitly using the "Type.Method" format. Returns an error if
 // zero or more than one non-mock match is found.
 func resolveBareMethod(ssaPkg *ssa.Package, name string) (*ssa.Function, error) {
@@ -88,7 +88,7 @@ func resolveBareMethod(ssaPkg *ssa.Package, name string) (*ssa.Function, error) 
 		if !ok {
 			continue
 		}
-		if trawl.IsMock(named) {
+		if detector.IsMock(named) {
 			continue
 		}
 		for method := range named.Methods() {

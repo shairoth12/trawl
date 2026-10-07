@@ -174,6 +174,18 @@ func TestDeduplicateCalls_Empty(t *testing.T) {
 	}
 }
 
+// An empty, non-nil input must stay non-nil so --dedup never prints
+// "external_calls": null.
+func TestDeduplicateCalls_EmptyNonNil(t *testing.T) {
+	t.Parallel()
+
+	got := deduplicateCalls([]trawl.ExternalCall{})
+
+	if got == nil {
+		t.Errorf("deduplicateCalls([]) = nil, want empty non-nil slice")
+	}
+}
+
 // testdataPath returns the path to the testdata directory from the module root.
 // Uses runtime.Caller so it works regardless of the test working directory.
 func testdataPath(subdir string) string {

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cross_module_trace` and `interface_dispatch`
 - Stats fields `packages_analyzed`, `dependency_packages`, `unresolved_invokes`
 - Two-module fixture `testdata/crossmodule` (analyzed module + dependency module)
+- "Compatibility" section in `docs/OUTPUT-FORMAT.md`: what may change in a minor
+  release. `service_type` and `resolved_via` are open enums (accept unknown
+  values); `confidence` is closed (`high`, `medium`, `low`)
 
 ### Changed
 
@@ -53,6 +56,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standard-library packages are recognized by the loader's module data, not by
   the path alone, so a module whose path has no dot (`module svc`) is treated
   as your code; in GOPATH mode the path rule still decides
+- Go API: `ExternalCall.ResolvedVia` and `ExternalCall.Confidence` have the new
+  named types `trawl.ResolvedVia` and `trawl.Confidence`, like `ServiceType`.
+  The JSON output is unchanged
+
+### Removed
+
+- Go API: the root package now holds types only. `ShortenName`, `NewResult`,
+  `LoadConfig` and `Config.Validate` are no longer exported. The CLI and its
+  output are not affected
 
 ### Fixed
 
@@ -63,6 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expires, and trawl returns once the running ones finish
 - A package whose path only starts with the module path (`example.com/app-extra`
   for module `example.com/app`) is no longer treated as part of the module
+- `--dedup` with no external calls printed `"external_calls": null`; it now
+  prints `[]`
 
 ## [0.2.0] - 2026-04-10
 

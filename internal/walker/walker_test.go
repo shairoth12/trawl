@@ -396,7 +396,7 @@ func TestIsMockMethod(t *testing.T) {
 		}
 		t.Run(tc.pattern, func(t *testing.T) {
 			t.Parallel()
-			got := trawl.IsMockMethod(tc.fn.Signature)
+			got := detector.IsMockMethod(tc.fn.Signature)
 			if got != tc.want {
 				t.Errorf("IsMockMethod(%s.Signature) = %v, want %v", tc.fn, got, tc.want)
 			}
@@ -528,6 +528,67 @@ func TestInferFromTypesPkg(t *testing.T) {
 			got := walker.InferFromTypesPkg(det, pkg)
 			if got != tt.want {
 				t.Errorf("InferFromTypesPkg(%q) = %q, want %q", tt.importPath, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShortenName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "generic_with_nested_paths",
+			input: "github.com/foo/rediscache.IRedisCache[*github.com/foo/bar.CacheItem, github.com/foo/baz.Cache].Set",
+			want:  "IRedisCache.Set",
+		},
+		{
+			name:  "pointer_receiver_with_path",
+			input: "(*github.com/foo/pkg.TypeName).Method",
+			want:  "(*TypeName).Method",
+		},
+		{
+			name:  "cloud_style_path",
+			input: "cloud.google.com/go/datastore.NameKey",
+			want:  "NameKey",
+		},
+		{
+			name:  "interface_method_with_path",
+			input: "github.com/foo/msgraph.Authenticator.GetTokenRoles",
+			want:  "Authenticator.GetTokenRoles",
+		},
+		{
+			name:  "stdlib_with_slash",
+			input: "net/http.Get",
+			want:  "Get",
+		},
+		{
+			name:  "no_path_no_generics",
+			input: "HandleRequest",
+			want:  "HandleRequest",
+		},
+		{
+			name:  "already_short_pointer_receiver",
+			input: "(*userDetails).GetUserDetails",
+			want:  "(*userDetails).GetUserDetails",
+		},
+		{
+			name:  "generic_single_param",
+			input: "github.com/foo/msgraph.IBatcher[encoding/json.RawMessage].SendBatchRawResponse",
+			want:  "IBatcher.SendBatchRawResponse",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := walker.ShortenName(tt.input)
+			if got != tt.want {
+				t.Errorf("ShortenName(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

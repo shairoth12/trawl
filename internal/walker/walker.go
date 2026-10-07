@@ -39,7 +39,7 @@ type Options struct {
 	DependencyPkgs []string        // packages with built bodies the walk may enter (LoadResult.DependencyPkgs)
 	Fset           *token.FileSet  // resolves source positions (LoadResult.Prog.Fset)
 	Log            *slog.Logger    // debug-level edge decisions; nil disables logging
-	Stdlib         map[string]bool // standard-library import paths (LoadResult.Stdlib); nil falls back to trawl.IsStandardLibrary
+	Stdlib         map[string]bool // standard-library import paths (LoadResult.Stdlib); nil falls back to detector.IsStandardLibrary
 }
 
 // Walker traverses a call graph from an entry point function and reports every
@@ -113,7 +113,8 @@ func New(graph *callgraph.Graph, d detector.Detector, opts Options) *Walker {
 // The message suggests switching to VTA, which builds a complete call graph
 // upfront.
 //
-// The returned slice is always non-nil, even when no external calls are found.
+// The returned slice is always non-nil, even when no external calls are found,
+// and each call has ShortFunction and ShortCallChain filled in.
 // WalkStats is zeroed on error.
 func (w *Walker) Walk(entry *ssa.Function) ([]trawl.ExternalCall, WalkStats, error) {
 	if w.graph == nil {
@@ -134,7 +135,9 @@ func (w *Walker) Walk(entry *ssa.Function) ([]trawl.ExternalCall, WalkStats, err
 		UnresolvedInvokes: w.unresolved,
 		TracedCrossings:   w.tracedCrossings,
 	}
-	return mergeByPosition(hits), stats, nil
+	calls := mergeByPosition(hits)
+	shortenCalls(calls)
+	return calls, stats, nil
 }
 
 // dfs performs a depth-first traversal of the call graph starting at node.
@@ -173,7 +176,7 @@ func (w *Walker) dfs(node *callgraph.Node, chain []string, cross *crossing) []hi
 		}
 		next := appendCopy(chain, fn.String())
 
-		if trawl.IsMockMethod(fn.Signature) {
+		if detector.IsMockMethod(fn.Signature) {
 			hits = append(hits, w.mockHits(edge, pkgPath, typesPkg, chain, cross)...)
 			continue
 		}
@@ -222,7 +225,7 @@ func (w *Walker) dfs(node *callgraph.Node, chain []string, cross *crossing) []hi
 // function and import path come from cross, resolvedVia becomes
 // cross_module_trace, and the confidence is that of what was actually found
 // inside.
-func (w *Walker) record(pos token.Pos, cross *crossing, svc trawl.ServiceType, importPath, function string, chain []string, resolvedVia, confidence string) hit {
+func (w *Walker) record(pos token.Pos, cross *crossing, svc trawl.ServiceType, importPath, function string, chain []string, resolvedVia trawl.ResolvedVia, confidence trawl.Confidence) hit {
 	if cross == nil {
 		return w.hitAt(pos, svc, importPath, function, chain, resolvedVia, confidence)
 	}
@@ -288,7 +291,7 @@ func unresolvedInvokes(node *callgraph.Node) []ssa.CallInstruction {
 	}
 	resolved := make(map[ssa.CallInstruction]bool, len(node.Out))
 	for _, e := range node.Out {
-		if fn := calleeFunc(e); e.Site != nil && fn != nil && !trawl.IsMockMethod(fn.Signature) {
+		if fn := calleeFunc(e); e.Site != nil && fn != nil && !detector.IsMockMethod(fn.Signature) {
 			resolved[e.Site] = true
 		}
 	}
@@ -364,7 +367,7 @@ func calleePkg(fn *ssa.Function) (string, *types.Package) {
 // Options.Stdlib when it was given and by the path rule otherwise.
 func (w *Walker) isStdlib(pkgPath string) bool {
 	if w.stdlib == nil {
-		return trawl.IsStandardLibrary(pkgPath)
+		return detector.IsStandardLibrary(pkgPath)
 	}
 	return w.stdlib[pkgPath]
 }
@@ -410,7 +413,7 @@ func (w *Walker) posAt(pos token.Pos) (string, int) {
 }
 
 // hitAt builds a hit for a call at pos.
-func (w *Walker) hitAt(pos token.Pos, svc trawl.ServiceType, importPath, function string, chain []string, resolvedVia, confidence string) hit {
+func (w *Walker) hitAt(pos token.Pos, svc trawl.ServiceType, importPath, function string, chain []string, resolvedVia trawl.ResolvedVia, confidence trawl.Confidence) hit {
 	file, line := w.posAt(pos)
 	return hit{pos: pos, call: trawl.ExternalCall{
 		ServiceType: svc, ImportPath: importPath, Function: function,

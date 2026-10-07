@@ -16,6 +16,7 @@ var (
 	IsUbiquitousInterface = isUbiquitousInterface
 	CalleePkg             = calleePkg
 	MergeByPosition       = mergeByPosition
+	ShortenName           = shortenName
 )
 
 // Hit exposes the internal hit type for merge tests.

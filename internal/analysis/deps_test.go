@@ -15,8 +15,8 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa/ssautil"
 
-	"github.com/shairoth12/trawl"
 	"github.com/shairoth12/trawl/internal/analysis"
+	"github.com/shairoth12/trawl/internal/detector"
 )
 
 func TestSelectDependencyPkgs(t *testing.T) {
@@ -62,7 +62,7 @@ func TestSelectDependencyPkgs(t *testing.T) {
 	})
 	t.Run("stdlib_never_selected", func(t *testing.T) {
 		for _, p := range paths(external) {
-			if trawl.IsStandardLibrary(p) {
+			if detector.IsStandardLibrary(p) {
 				t.Errorf("stdlib package %q selected", p)
 			}
 		}

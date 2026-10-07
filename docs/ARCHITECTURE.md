@@ -7,7 +7,7 @@ trawl is a Go static analysis CLI. Given a Go package and an entry-point functio
 ## System Overview
 
 ```
-trawl.yaml ──► LoadConfig() ──► Config
+trawl.yaml ──► loadConfig() ──► Config
                                   │
                                   ▼
 ./pkg + scope ──► analysis.Load() ──► LoadResult { Prog, Graph, SSAPkg, Module }
@@ -26,20 +26,19 @@ trawl.yaml ──► LoadConfig() ──► Config
                                                   │
                                                   ▼
       graph + Detector ──► walker.New() ──► Walker
-              module, log  walker.Walk(fn) ──► []ExternalCall
+              module, log  walker.Walk(fn) ──► []ExternalCall (short names filled)
                                                     │
                                                     ▼
                                            relativize paths
                                            dedup (--dedup)
-                                           ShortenName
                                                     │
                                                     ▼
                                              JSON ──► stdout
 ```
 
 All stages run sequentially in `cmd/trawl/main.go`.
-Data types are defined in the root `trawl` package (`trawl.go`, `config.go`).
-The three `internal/` packages import `trawl` for shared types but do not import each other.
+Data types are defined in the root `trawl` package (`trawl.go`); it holds types only (see [ADR 0013](adr/0013-root-package-is-schema-only.md)).
+The `internal/` packages import `trawl` for shared types. `analysis` and `walker` also import `detector` for the mock and standard-library checks; nothing imports `walker` or `analysis`.
 
 ## Pipeline
 
@@ -117,12 +116,12 @@ Stage 6: DFS Walk
     │      interface_dispatch record, classified by the package
     │      that declares the interface
     │
-    │  Finally: several hits for the same line collapse into one record
+    │  Finally: several hits for the same line collapse into one record,
+    │  then ShortFunction / ShortCallChain are filled in
     ▼
 Stage 7: Post-process + JSON output
     │  ├─ Strip absolute file paths → relative
     │  ├─ Deduplicate (--dedup)
-    │  ├─ Populate ShortFunction / ShortCallChain
     │  └─ json.Encoder → stdout
     ▼
   EXIT
@@ -133,16 +132,14 @@ Stage 7: Post-process + JSON output
 ```
 github.com/shairoth12/trawl/
 │
-├── trawl.go              Root package. Type definitions only.
-│   │                     Result, ExternalCall, ServiceType, Indicator, Config
-│   │                     ShortenName() — strips module paths and generics
-│   │
-├── config.go             LoadConfig(), Config.Validate()
-│   │                     Reads YAML, validates non-empty fields
+├── trawl.go              Root package. Type definitions only, no functions.
+│   │                     Result, ExternalCall, AnalysisStats, Indicator, Config
+│   │                     ServiceType, ResolvedVia, Confidence + their constants
 │   │
 ├── cmd/trawl/
-│   └── main.go           CLI entry point. Flag parsing, pipeline orchestration.
-│                         buildLogger(), deduplicateCalls(), versionInfo(), toolchainWarning()
+│   ├── main.go           CLI entry point. Flag parsing, pipeline orchestration.
+│   │                     buildLogger(), deduplicateCalls(), versionInfo(), toolchainWarning()
+│   └── config.go         loadConfig(), validateConfig(): reads YAML, validates non-empty fields
 │
 ├── internal/
 │   ├── analysis/
@@ -170,9 +167,12 @@ github.com/shairoth12/trawl/
 │   │   │                 SkipInternal: excludes /internal/ subpackages
 │   │   │                 WrapperFor: expanded to separate indicators at New() time
 │   │   │                 Priority: user indicators first, then builtins
+│   │   │                 IsStandardLibrary(): dotless-first-element check
 │   │   │
-│   │   └── builtin.go    13 built-in indicators (HTTP, gRPC, Redis, Postgres, etc.)
-│   │                     All have SkipInternal: true
+│   │   ├── builtin.go    13 built-in indicators (HTTP, gRPC, Redis, Postgres, etc.)
+│   │   │                 All have SkipInternal: true
+│   │   │
+│   │   └── mockcheck.go  IsMock(), IsMockMethod(): generated-mock check (mock.Mock / *gomock.Controller field)
 │   │
 │   └── walker/
 │       ├── walker.go     Walker: DFS traversal of callgraph.Graph
@@ -180,6 +180,8 @@ github.com/shairoth12/trawl/
 │       │                 Filters: ubiquitous interfaces, mock types
 │       │                 Cross-module inference: 2-level transitive import scan
 │       │                 appendCopy() prevents slice aliasing in DFS chains
+│       │
+│       ├── shorten.go    shortenName(): strips module paths and generics for short_* fields
 │       │
 │       └── export_test.go  Test bridge — exports unexported helpers
 │
@@ -196,8 +198,8 @@ github.com/shairoth12/trawl/
 │   ├── mock/, gomock/    Stand-ins for testify mock.Mock and gomock.Controller
 │   ├── crossmodule/      Two modules: svc (analyzed) + lib (dependency)
 │   ├── generic/          Generic type instantiation
-│   ├── scope/            VTA/CHA scope resolution (leaf + wiring)
-│   └── config/           YAML config fixtures
+│   └── scope/            VTA/CHA scope resolution (leaf + wiring)
+│                         (YAML config fixtures live in cmd/trawl/testdata/config/)
 │
 ├── integration_test.go   15 end-to-end tests (full pipeline)
 ├── trawl_test.go         Unit tests for root package types
@@ -209,13 +211,17 @@ github.com/shairoth12/trawl/
 
 ## Key Data Types
 
+Which enum values may be added in a minor release: see [OUTPUT-FORMAT.md, Compatibility](OUTPUT-FORMAT.md#compatibility).
+
 ```
 ServiceType  string                    // "HTTP", "REDIS", "GRPC", …
+ResolvedVia  string                    // how a call was found: "direct", "cross_module_trace", …
+Confidence   string                    // "high" | "medium" | "low"
 
 Result {
     EntryPoint    string               // SSA-qualified: "pkg.FuncName"
     Package       string               // import path of analyzed package
-    ExternalCalls []ExternalCall        // never nil
+    ExternalCalls []ExternalCall        // never nil in trawl's output
     Deduplicated  bool                 // true iff --dedup used
 }
 
@@ -226,8 +232,8 @@ ExternalCall {
     File           string              // relative source path
     Line           int                 // 0 for synthetic edges
     CallChain      []string            // entry → … → call site
-    ResolvedVia    string              // "direct" | "mock_inference" | "cross_module_inference" | "cross_module_trace" | "interface_dispatch"
-    Confidence     string              // "high" | "medium" | "low"
+    ResolvedVia    ResolvedVia         // open enum: "direct" | "mock_inference" | "cross_module_inference" | "cross_module_trace" | "interface_dispatch" | future values
+    Confidence     Confidence          // closed enum: "high" | "medium" | "low"
     ShortFunction  string              // Function with paths/generics stripped
     ShortCallChain []string            // CallChain with same stripping
 }
@@ -344,17 +350,18 @@ Decisions that are hard to reverse, surprising without context, and the result o
 | [0010](adr/0010-attribute-to-boundary-call-site.md) | Findings inside a dependency are reported at the call in your code that entered it |
 | [0011](adr/0011-always-on-position-merge.md) | Position merge is always on |
 | [0012](adr/0012-per-package-build-not-program-build.md) | `Program.Build` is not used |
+| [0013](adr/0013-root-package-is-schema-only.md) | Root package holds types only |
 
 ## Test Strategy
 
 ```
 Level          │ Files                          │ Count │ What it validates
 ───────────────┼────────────────────────────────┼───────┼──────────────────────────────────
-Unit           │ trawl_test.go                  │ 19    │ Type serialization, ShortenName, Config validation
-Unit           │ internal/detector/*_test.go    │ 8     │ Prefix matching, SkipInternal, WrapperFor, builtins
+Unit           │ trawl_test.go                  │ 4     │ Type serialization
+Unit           │ internal/detector/*_test.go    │ 9     │ Prefix matching, SkipInternal, WrapperFor, builtins, stdlib check
 Unit           │ internal/analysis/*_test.go    │ 22    │ Package loading, dependency selection, SSA build, entry resolution
-Unit           │ internal/walker/*_test.go      │ 30    │ DFS traversal, filters, inference, generics, walking into dependencies, merge
-Unit           │ cmd/trawl/main_test.go         │ 12    │ Version info, dedup, help output, --deps, stats
+Unit           │ internal/walker/*_test.go      │ 31    │ DFS traversal, filters, inference, generics, walking into dependencies, merge, name shortening
+Unit           │ cmd/trawl/*_test.go            │ 15    │ Version info, dedup, help output, --deps, stats, config loading
 Integration    │ integration_test.go            │ 15    │ Full pipeline: load → resolve → walk → JSON (incl. two-module fixture)
 ```
 

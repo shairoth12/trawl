@@ -8,7 +8,7 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/types/typeutil"
 
-	"github.com/shairoth12/trawl"
+	"github.com/shairoth12/trawl/internal/detector"
 )
 
 // maxSelectionRounds is how many interface hops get bodies. Round 1 picks
@@ -127,12 +127,12 @@ func collectInvokedInterfaces(toScan []*packages.Package, stdlib map[string]bool
 }
 
 // declaresImplementor reports whether scope declares a concrete named type,
-// other than a generated mock (see trawl.IsMock), that implements any of the
+// other than a generated mock (see detector.IsMock), that implements any of the
 // collected interfaces.
 func declaresImplementor(scope *types.Scope, ifaces invokedInterfaces, cache *typeutil.MethodSetCache) bool {
 	for _, name := range scope.Names() {
 		tn, ok := scope.Lookup(name).(*types.TypeName)
-		if !ok || tn.IsAlias() || trawl.IsMock(tn.Type()) {
+		if !ok || tn.IsAlias() || detector.IsMock(tn.Type()) {
 			continue
 		}
 		named, ok := types.Unalias(tn.Type()).(*types.Named)

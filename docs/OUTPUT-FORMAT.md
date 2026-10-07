@@ -1,6 +1,28 @@
 # Output Format
 
 trawl writes a single JSON object to stdout. This document is the authoritative schema reference.
+Go programs can decode it into `trawl.Result` from the root package.
+
+## Compatibility
+
+trawl follows [semantic versioning](https://semver.org/). For the JSON output that means:
+
+```
+Stable within a major version      │ May change in a minor release
+───────────────────────────────────┼──────────────────────────────────────────────
+Field names and their JSON types   │ New fields (ignore fields you don't know)
+Which fields are always present    │ New values of the open enums:
+external_calls is never null       │   service_type, resolved_via
+The closed enum: confidence        │
+```
+
+- **Open enums** (`service_type`, `resolved_via`): new values may appear in any release.
+  Don't fail on a value you don't know. For an unknown `resolved_via`, go by `confidence`.
+- **Closed enum** (`confidence`): always `high`, `medium` or `low`. A new level would be a
+  major version.
+- **Not part of the contract**: which calls are found, the contents of `call_chain`, the
+  formatting of `function` and `short_*` names, and all `stats` values. These are analysis
+  results; a better analysis changes them in a minor release, and the CHANGELOG says how.
 
 ## Top-Level Object
 
@@ -101,7 +123,7 @@ short_call_chain │ string[]      │ YES    │ call_chain with same stripping
 
 ## Enums
 
-### `resolved_via`
+### `resolved_via` (open)
 
 ```
 Value                      │ Meaning                                          │ Typical confidence
@@ -134,7 +156,7 @@ For `cross_module_trace` records, `file`/`line`/`function`/`import_path` describ
 
 When confidence is `low` (`interface_dispatch`, `cross_module_inference`, or a `cross_module_trace` whose inner hit was itself guessed), `service_type` comes from the **first** recognised import of the package that declares the interface. For a facade wrapping several backends it may name the wrong one — read a `low` record as "some external call here", not as the service identity. With `--deps auto` and a visible implementor the record is `high` and classified per method.
 
-### `confidence`
+### `confidence` (closed)
 
 ```
 Value   │ Meaning
@@ -144,7 +166,7 @@ medium  │ Mock inference. Likely correct, depends on import conventions.
 low     │ Transitive import inference. Treat as a hint, verify manually.
 ```
 
-### `service_type` (built-in values)
+### `service_type` (open; built-in values)
 
 ```
 HTTP, GRPC, REDIS, PUBSUB, DATASTORE, FIRESTORE,
@@ -166,7 +188,7 @@ This ensures downstream consumers (LLM agents, automation) see the abstract inte
 
 ## Name Shortening
 
-`short_function` and `short_call_chain` are computed by `trawl.ShortenName()`:
+`short_function` and `short_call_chain` are computed by trawl as follows:
 
 ```
 Input                                           │ Output

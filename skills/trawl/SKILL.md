@@ -212,6 +212,7 @@ trawl --pkg ./cmd/server --entry HandleRequest --log-level off
 | `cross_module_inference` | `low` | External module; service type inferred from transitive imports | Treat as a hint; verify manually if it matters |
 | `cross_module_trace` | `high` (sometimes `low`) | A dependency's function body was walked to a real backend call; `file`/`line` are the module-side call, `call_chain` continues into the dependency | Trust `high`; this is the line to mock |
 | `interface_dispatch` | `high` or `low` | Interface call with no visible implementor; `high` when the interface's package is a configured indicator, `low` when inferred from its imports | `high`: trust; `low`: hint, the implementor may be bound by reflection |
+| any other value | any | A `resolved_via` added in a newer trawl | Go by `confidence` |
 
 For most agent workflows: surface `high` and `medium` confidently, flag `low` confidence
 results as "inferred, not confirmed." A `low` `service_type` is the first detected import of

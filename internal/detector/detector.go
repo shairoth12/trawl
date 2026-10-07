@@ -62,3 +62,13 @@ func (d *detector) Detect(importPath string) (trawl.ServiceType, bool) {
 	}
 	return "", false
 }
+
+// IsStandardLibrary reports whether importPath looks like a Go standard
+// library path: no dot in its first element ("net/http", "fmt"), unlike most
+// module paths ("github.com/x/y"). A module may also have a dotless path
+// ("module svc"), so analysis combines this with the loader's module data
+// (LoadResult.Stdlib); use this alone only when that data is not available.
+func IsStandardLibrary(importPath string) bool {
+	first, _, _ := strings.Cut(importPath, "/")
+	return !strings.Contains(first, ".")
+}
